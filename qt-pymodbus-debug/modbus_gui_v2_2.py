@@ -6,9 +6,10 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QDoubleSpinBox, QMessageBox, QSplitter, QHeaderView, QSpinBox
 )
 from PyQt5.QtCore import QTimer, Qt
+import serial.tools.list_ports
 
-# Pilih versi pymodbus yang digunakan
-# from modbus_client import ModbusClient
+#Pilih versi pymodbus yang dipakai
+#from modbus_client import ModbusClient
 from modbus_client_v3 import ModbusClient
 
 class ModbusGUI(QWidget):
@@ -31,7 +32,8 @@ class ModbusGUI(QWidget):
         form.addWidget(QLabel("Mode"), 0, 0)
         form.addWidget(self.mode_combo, 0, 1)
 
-        self.port_edit = QLineEdit("/dev/ttyUSB0")
+        self.port_edit = QComboBox()
+        self.refreshButton = QPushButton("Refresh Port")
         self.baud_edit = QLineEdit("9600")
         self.host_edit = QLineEdit("127.0.0.1")
         self.tcp_port_edit = QLineEdit("502")
@@ -49,6 +51,7 @@ class ModbusGUI(QWidget):
 
         form.addWidget(QLabel("Port"), 1, 0)
         form.addWidget(self.port_edit, 1, 1)
+        form.addWidget(self.refreshButton, 0, 2)
         form.addWidget(QLabel("Baudrate"), 1, 2)
         form.addWidget(self.baud_edit, 1, 3)
         form.addWidget(QLabel("Parity"), 1, 4)
@@ -60,6 +63,7 @@ class ModbusGUI(QWidget):
         form.addWidget(QLabel("Timeout (s)"), 4, 4)
         form.addWidget(self.timeout_spin, 4, 5)
 
+        self.refreshButton.clicked.connect(self.update_ports)
         self.unit_edit = QSpinBox(); self.unit_edit.setRange(0, 256); self.unit_edit.setValue(1)
         self.reg_edit = QSpinBox(); self.reg_edit.setRange(0, 100000)
         self.qty_edit = QSpinBox(); self.qty_edit.setRange(0, 1000); self.qty_edit.setValue(1)
@@ -130,7 +134,16 @@ class ModbusGUI(QWidget):
         self.stop_btn.clicked.connect(self.stop_polling)
         self.clear_btn.clicked.connect(self.clear_all)
         self.exit_btn.clicked.connect(self.close)
+        self.update_ports()
 
+    def update_ports(self):
+        self.port_edit.clear()
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            self.port_edit.addItem(f"{port.device}")
+        if not ports:
+            self.port_edit.addItem("(Tidak ada port terdeteksi)")
+    
     def update_mode_fields(self):
         mode = self.mode_combo.currentText().lower()
         if mode == 'rtu':
@@ -160,7 +173,7 @@ class ModbusGUI(QWidget):
         cfg = {'type': mode}
         if mode == 'rtu':
             cfg.update({
-                'port': self.port_edit.text(),
+                'port': self.port_edit.currentText(),
                 'baudrate': int(self.baud_edit.text()),
                 'parity': self.parity_combo.currentText(),
                 'bytesize': int(self.bytesize_combo.currentText()),
