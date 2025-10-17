@@ -17,6 +17,7 @@ from config_manager import load_config, save_config
 from storage.csv_logger import CSVLogger
 from storage.mysql_logger import MySQLLogger
 from modbus_worker import ModbusPoller
+import serial.tools.list_ports
 
 # Thread wrapper for polling (calls run_once periodically)
 class PollThread(QThread):
@@ -93,7 +94,8 @@ class MainWindow(QWidget):
 
         # Modbus section
         self.cmb_type = QComboBox(); self.cmb_type.addItems(["rtu", "tcp"])
-        self.le_port = QLineEdit()
+        self.le_port = QComboBox()
+        self.refreshButton = QPushButton("Refresh Ports")
         self.le_baud = QLineEdit()
         self.cmb_bytesize = QComboBox(); self.cmb_bytesize.addItems(["8","7"])
         self.cmb_parity = QComboBox(); self.cmb_parity.addItems(["N","E","O"])
@@ -136,6 +138,7 @@ class MainWindow(QWidget):
         form.addRow(QLabel("<b>Modbus</b>"))
         form.addRow("Type:", self.cmb_type)
         form.addRow("Serial Port (or Host):", self.le_port)
+        form.addRow("Refresh Port:", self.refreshButton)
         form.addRow("Baudrate:", self.le_baud)
         form.addRow("Byte size:", self.cmb_bytesize)
         form.addRow("Parity:", self.cmb_parity)
@@ -164,6 +167,7 @@ class MainWindow(QWidget):
         sett_layout.addLayout(settings_btn_layout)
 
         # wire signals
+        self.refreshButton.clicked.connect(self.update_ports)
         self.btn_start.clicked.connect(self.start_polling)
         self.btn_stop.clicked.connect(self.stop_polling)
         self.btn_reload.clicked.connect(self.reload_config)
@@ -173,6 +177,14 @@ class MainWindow(QWidget):
 
         # finish main layout
         main_layout.addWidget(self.tabs)
+    
+    def update_ports(self):
+        self.le_port.clear()
+        ports = serial.tools.list_ports.comports()
+        for port in ports:
+            self.le_port.addItem(f"{port.device}")
+        if not ports:
+            self.le_port.addItem("(Tidak ada port terdeteksi)")
 
     # helper: populate fields from config object
     def _load_settings_to_form(self):
@@ -184,7 +196,6 @@ class MainWindow(QWidget):
 
         # Modbus
         self.cmb_type.setCurrentText(mod.get('type','rtu'))
-        self.le_port.setText(mod.get('port','/dev/ttyUSB0'))
         self.le_baud.setText(mod.get('baudrate','9600'))
         self.cmb_bytesize.setCurrentText(mod.get('bytesize','8'))
         self.cmb_parity.setCurrentText(mod.get('parity','N'))
@@ -252,7 +263,7 @@ class MainWindow(QWidget):
 
         m = cfg['Modbus']
         m['type'] = self.cmb_type.currentText()
-        m['port'] = self.le_port.text()
+        m['port'] = self.le_port.currentText()
         m['baudrate'] = self.le_baud.text()
         m['bytesize'] = self.cmb_bytesize.currentText()
         m['parity'] = self.cmb_parity.currentText()
