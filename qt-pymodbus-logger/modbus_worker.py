@@ -1,6 +1,6 @@
 from datetime import datetime
 import time
-from modbus_client import ModbusClient
+from modbus_client_v3 import ModbusClient
 
 class ModbusPoller:
     def __init__(self, cfg, logger_list=None):
