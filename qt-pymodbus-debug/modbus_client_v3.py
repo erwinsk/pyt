@@ -63,9 +63,21 @@ class ModbusClient:
         logger.addHandler(self.handler)
         logger.setLevel(logging.DEBUG)
 
-        # Deteksi versi utama
+        # Deteksi versi utama & minor
         from pymodbus import __version__
-        self.v3 = int(__version__.split('.')[0]) >= 3
+        parts = __version__.split('.')
+        self.v_major = int(parts[0]) if len(parts) > 0 else 0
+        self.v_minor = int(parts[1]) if len(parts) > 1 else 0
+
+        # Tentukan parameter ID yang sesuai versi
+        if self.v_major < 3:
+            self.dev_key = "unit"
+        elif self.v_major == 3 and self.v_minor < 11:
+            self.dev_key = "slave"
+        else:
+            self.dev_key = "device_id"
+
+        print(f"[ModbusClient] pymodbus {__version__} → using key '{self.dev_key}'")
 
     def open(self):
         if self.mode == 'rtu':
@@ -91,26 +103,17 @@ class ModbusClient:
             self.client.close()
             self.client = None
 
-    # === helper internal ===
     def _read(self, func, address, count, unit):
-        if self.v3:
-            # Pymodbus 3.x: wajib pakai keyword
-            return func(address=address, count=count, device_id=unit)
-        else:
-            # Pymodbus 2.x: masih pakai unit
-            return func(address, count, unit=unit)
+        kw = {"address": address, "count": count, self.dev_key: unit}
+        return func(**kw)
 
     def _write(self, func, address, values, unit):
-        if self.v3:
-            if isinstance(values, (list, tuple)):
-                return func(address=address, values=values, device_id=unit)
-            else:
-                return func(address=address, value=values, device_id=unit)
+        if isinstance(values, (list, tuple)):
+            kw = {"address": address, "values": values, self.dev_key: unit}
         else:
-            if isinstance(values, (list, tuple)):
-                return func(address, values, unit=unit)
-            else:
-                return func(address, values, unit=unit)
+            kw = {"address": address, "value": values, self.dev_key: unit}
+        return func(**kw)
+
 
     # === API user ===
     def read_holding(self, address, count, unit=1):
