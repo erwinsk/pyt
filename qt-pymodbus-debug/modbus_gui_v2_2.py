@@ -6,7 +6,10 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QDoubleSpinBox, QMessageBox, QSplitter, QHeaderView, QSpinBox
 )
 from PyQt5.QtCore import QTimer, Qt
-from modbus_client import ModbusClient
+
+# Pilih versi pymodbus yang digunakan
+# from modbus_client import ModbusClient
+from modbus_client_v3 import ModbusClient
 
 class ModbusGUI(QWidget):
     def __init__(self):
