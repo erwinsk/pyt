@@ -98,6 +98,7 @@ class SerialThread(QThread):
 
     def __init__(self):
         super().__init__()
+        self.debug = True
         self.running = False
         self.logging_enabled = False
         self.port = None
@@ -129,6 +130,7 @@ class SerialThread(QThread):
         self.csv_file = file_path
 
     def set_interval(self, seconds):
+        if self.debug == True : print("interval: ", seconds)
         self.log_interval = seconds
 
     def run(self):
@@ -158,6 +160,7 @@ class SerialThread(QThread):
                 data = self.ser.read(self.ser.in_waiting or 1)
 
                 if data:
+                    if self.debug == True : print("time: %s data: %s" % (datetime.datetime.now().isoformat(),data))
                     buffer += data
                     frames, buffer = extract_frames(buffer)
 
@@ -174,28 +177,6 @@ class SerialThread(QThread):
                             self.polarity_upper = polarity
                             self.data_received.emit("upper", value, unit, polarity)
 
-                            # Logging dipicu saat pasangan lengkap + interval tercapai
-                            now = time.time()
-
-                            if (self.logging_enabled and self.writer and
-                                self.last_lower is not None and
-                                now - self.last_log_time >= self.log_interval):
-
-                                self.writer.writerow([
-                                    datetime.datetime.now().isoformat(),
-                                    self.last_upper,
-                                    self.last_middle,
-                                    self.last_lower,
-                                    self.unit_upper,
-                                    self.unit_middle,
-                                    self.unit_lower,
-                                    self.polarity_upper,
-                                    self.polarity_middle,
-                                    self.polarity_lower
-                                ])
-                                self.file_handle.flush()
-                                self.last_log_time = now
-
                         elif header == "43":
                             self.last_lower = value
                             self.unit_lower = unit
@@ -207,6 +188,28 @@ class SerialThread(QThread):
                             self.unit_middle = unit
                             self.polarity_middle = polarity
                             self.data_received.emit("middle", value, unit, polarity)
+                        
+                 # Logging dipicu saat pasangan lengkap + interval tercapai
+                    now = time.time()
+                    if (self.logging_enabled and self.writer and
+                        self.last_lower is not None and
+                        now - self.last_log_time >= self.log_interval):
+                        if self.debug == True : print("Merekam data pada",time.time())
+
+                        self.writer.writerow([
+                            datetime.datetime.now().isoformat(),
+                            self.last_upper,
+                            self.last_middle,
+                            self.last_lower,
+                            self.unit_upper,
+                            self.unit_middle,
+                            self.unit_lower,
+                            self.polarity_upper,
+                            self.polarity_middle,
+                            self.polarity_lower
+                        ])
+                        self.file_handle.flush()
+                        self.last_log_time = now
 
                 time.sleep(0.01)
 
