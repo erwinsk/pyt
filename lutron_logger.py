@@ -230,7 +230,8 @@ class SerialThread(QThread):
                                 self.unit_upper,
                                 self.polarity_upper,
                                 ])
-                        self.file_handle.flush()
+                        if self.file_handle:
+                            self.file_handle.flush()
                         self.last_log_time = now
 
                 time.sleep(0.01)
