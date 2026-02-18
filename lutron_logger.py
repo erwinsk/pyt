@@ -298,6 +298,9 @@ class MainWindow(QWidget):
         self.serial_thread = SerialThread()
 
         self.port_combo = QComboBox()
+        self.refresh_ports_btn = QPushButton()
+        self.refresh_ports_btn.setIcon(self.style().standardIcon(self.style().SP_BrowserReload))
+        self.refresh_ports_btn.clicked.connect(self.refresh_ports)
         self.refresh_ports()
 
         self.baud_combo = QComboBox()
@@ -340,8 +343,9 @@ class MainWindow(QWidget):
         layout = QVBoxLayout()
 
         row1 = QHBoxLayout()
-        row1.addWidget(self.port_combo)
-        row1.addWidget(self.baud_combo)
+        row1.addWidget(self.port_combo, stretch=1)
+        row1.addWidget(self.refresh_ports_btn, stretch=0)
+        row1.addWidget(self.baud_combo, stretch=0)
 
         row2 = QHBoxLayout()
         row2.addWidget(self.connect_btn)
