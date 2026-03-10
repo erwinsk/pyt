@@ -1,4 +1,4 @@
-import sys, os, csv, time, serial, serial.tools.list_ports
+import sys, os, csv, time, serial, serial.tools.list_ports, glob
 from PyQt5 import uic
 from PyQt5.QtWidgets import QApplication, QWidget, QFileDialog, QMessageBox
 from PyQt5.QtCore import QThread, pyqtSignal
@@ -62,6 +62,11 @@ class SerialLogger(QWidget):
 
     def refresh_ports(self):
         ports = [p.device for p in serial.tools.list_ports.comports()]
+        # tambahkan UART internal Linux
+        ports += glob.glob('/dev/ttyS*')
+
+        # hilangkan duplikat dan urutkan
+        ports = sorted(set(ports))
         self.portBox.clear()
         self.portBox.addItems(ports or ["(no port found)"])
 

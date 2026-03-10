@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QTimer, Qt
 import serial.tools.list_ports
+import glob
 
 #Pilih versi pymodbus yang dipakai
 #from modbus_client import ModbusClient
@@ -138,9 +139,18 @@ class ModbusGUI(QWidget):
 
     def update_ports(self):
         self.port_edit.clear()
-        ports = serial.tools.list_ports.comports()
+
+        ports = [p.device for p in serial.tools.list_ports.comports()]
+
+        # tambahkan UART internal Linux
+        ports += glob.glob('/dev/ttyS*')
+
+        # hilangkan duplikat dan urutkan
+        ports = sorted(set(ports))
+
         for port in ports:
-            self.port_edit.addItem(f"{port.device}")
+            self.port_edit.addItem(port)
+
         if not ports:
             self.port_edit.addItem("(Tidak ada port terdeteksi)")
     
