@@ -223,7 +223,8 @@ class ModbusScannerThread(QThread):
                         if tipe_reg in ['Holding', 'Input']:
                             val_int = str(struct.unpack('h', struct.pack('H', res.registers[0]))[0]) if encoding == 'Signed 16-bit INT' else str(res.registers[0])
                             val_float = "-"
-                            if len(res.registers) >= 2:
+                            # Tambahkan pengecekan idx % 2 == 0
+                            if idx % 2 == 0 and len(res.registers) >= 2:
                                 val_float = dekode_register_sepasang(res.registers[0], res.registers[1], encoding)
                             hasil.append((reg, val_int, val_float))
                         else:
@@ -954,8 +955,10 @@ class ModbusApp(QMainWindow):
                 
                 val_float = "-"
                 # Decode float dengan register saat ini dan berikutnya (menghasilkan nilai overlap perbaris)
-                if idx + 1 < len(nilai_mentah):
+                if idx % 2 == 0 and (idx + 1) < len(nilai_mentah):
                     val_float = dekode_register_sepasang(int(nilai_mentah[idx]), int(nilai_mentah[idx+1]), encoding)
+                else:
+                    val_float = "-"
             else:
                 val_int = str(nilai_mentah[idx])
                 val_float = "-"
@@ -1101,7 +1104,19 @@ class ModbusApp(QMainWindow):
             if res and res.isError():
                 self.txt_write_log.append(f"[{waktu_skrg}] <font color='red'>Gagal! Respons Modbus Error: {res}</font>")
             elif res:
-                self.txt_write_log.append(f"[{waktu_skrg}] <font color='green'>Transmisi Sukses → Addr: {alamat_tujuan} | ID: {target_device_id}</font>")
+                # Tangkap nilai data yang dieksekusi berdasarkan jenis perintah
+                if "Single Coil" in tipe_fungsi:
+                    data_kirim = str(val_bool)
+                elif "Single Register" in tipe_fungsi:
+                    data_kirim = str(register_final[0])
+                elif "Multiple Coils" in tipe_fungsi:
+                    data_kirim = str(kwargs.get('values', []))
+                else:
+                    # Untuk Multiple Registers
+                    data_kirim = str(register_final)
+                
+                # Tampilkan data_kirim pada log interface
+                self.txt_write_log.append(f"[{waktu_skrg}] <font color='green'>Transmisi Sukses → Addr: {alamat_tujuan} | ID: {target_device_id} | Data: {data_kirim}</font>")
         except Exception as e:
             self.txt_write_log.append(f"[{waktu_skrg}] <font color='red'>Kesalahan Hardware: {str(e)}</font>")
         finally:
