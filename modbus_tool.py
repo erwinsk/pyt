@@ -1290,6 +1290,49 @@ class ModbusApp(QMainWindow):
 
 
     # ==================================================================
+    # EXPORT CSV
+    # ==================================================================
+    def _export_tabel_ke_csv(self, tabel: QTableWidget, nama_file_default: str):
+        """Export isi QTableWidget ke file CSV yang dipilih user."""
+        if tabel.rowCount() == 0:
+            QMessageBox.information(self, "Export CSV", "Tidak ada data untuk diekspor.")
+            return
+
+        jalur, _ = QFileDialog.getSaveFileName(
+            self,
+            "Simpan Data sebagai CSV",
+            f"{nama_file_default}.csv",
+            "CSV Files (*.csv)"
+        )
+        if not jalur:
+            return
+
+        try:
+            with open(jalur, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+
+                # Tulis header dari kolom tabel
+                headers = []
+                for col in range(tabel.columnCount()):
+                    item = tabel.horizontalHeaderItem(col)
+                    headers.append(item.text() if item else f"Kolom {col + 1}")
+                writer.writerow(headers)
+
+                # Tulis setiap baris data
+                for row in range(tabel.rowCount()):
+                    baris = []
+                    for col in range(tabel.columnCount()):
+                        item = tabel.item(row, col)
+                        baris.append(item.text() if item else "")
+                    writer.writerow(baris)
+
+            self._set_status(f"Export berhasil → {jalur}")
+            QMessageBox.information(self, "Export CSV", f"Data berhasil diekspor ke:\n{jalur}")
+
+        except Exception as e:
+            QMessageBox.warning(self, "Gagal Export", f"Terjadi kesalahan saat menyimpan:\n{str(e)}")
+
+    # ==================================================================
     # CLOSE EVENT
     # ==================================================================
     def matikan_semua_thread_aktif(self):
@@ -1314,3 +1357,4 @@ if __name__ == "__main__":
     window = ModbusApp()
     window.show()
     sys.exit(app.exec_())
+
