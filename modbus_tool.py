@@ -480,11 +480,51 @@ class ModbusApp(QMainWindow):
 
     def penyegaran_port_serial(self):
         self.combo_port.clear()
-        ports = serial.tools.list_ports.comports()
-        for p in ports:
-            self.combo_port.addItem(p.device)
+        ports_terdeteksi = {}
+
+        # 1) Deteksi via pyserial (comports()).
+        #    Di banyak board Linux embedded (termasuk Rockchip), pyserial hanya
+        #    mengenali port yang punya symlink 'device' lengkap di sysfs — biasanya
+        #    UART via USB (ttyUSBx/ttyACMx). UART bawaan board seperti ttyS0-ttyS4
+        #    sering TIDAK ikut terdeteksi walau nodenya benar-benar ada di /dev.
+        try:
+            for p in serial.tools.list_ports.comports():
+                ports_terdeteksi[p.device] = p.description
+        except Exception as e:
+            self._log_gagal_deteksi_port(str(e))
+
+        # 2) FIX: fallback pemindaian manual ke /dev untuk pola UART yang umum
+        #    dipakai di board embedded (termasuk Rockchip ttyS0-ttyS4), supaya
+        #    port yang terlewat oleh pyserial tetap muncul di daftar.
+        pola_tambahan = [
+            "/dev/ttyS*",      # UART bawaan SoC (mis. Rockchip ttyS0-ttyS4)
+            "/dev/ttyUSB*",    # USB-to-serial (FTDI, CH340, dst)
+            "/dev/ttyACM*",    # USB CDC-ACM
+            "/dev/ttyAMA*",    # UART PL011 (mis. Raspberry Pi/board ARM lain)
+            "/dev/ttyFIQ*",    # UART fastcall khusus sebagian board Rockchip
+        ]
+        try:
+            import glob
+            for pola in pola_tambahan:
+                for dev in glob.glob(pola):
+                    if dev not in ports_terdeteksi:
+                        ports_terdeteksi[dev] = "Terdeteksi manual (UART board)"
+        except Exception as e:
+            self._log_gagal_deteksi_port(str(e))
+
+        for dev in sorted(ports_terdeteksi.keys()):
+            self.combo_port.addItem(dev)
+
         if self.combo_port.count() == 0:
             self.combo_port.addItem("Tidak Ada Port")
+
+    def _log_gagal_deteksi_port(self, pesan_error):
+        # Tidak menghentikan aplikasi hanya karena satu metode deteksi gagal
+        # (mis. karena permission), tetapi tetap diberi tahu ke status bar.
+        try:
+            self._set_status(f"Peringatan saat memindai port: {pesan_error}")
+        except Exception:
+            pass
 
     def perubahan_ui_mode(self):
         is_rtu = "RTU" in self.combo_mode.currentText()
@@ -519,6 +559,11 @@ class ModbusApp(QMainWindow):
 
     def buka_koneksi_modbus(self):
         config = self.dapatkan_konfigurasi_koneksi()
+        if config['mode'] == 'RTU' and config['port'] == "Tidak Ada Port":
+            QMessageBox.warning(self, "Port Tidak Tersedia",
+                                 "Tidak ada port serial yang terdeteksi. "
+                                 "Klik 'Segarkan Port' atau periksa hak akses /dev/ttyS*.")
+            return
         try:
             if config['mode'] == 'RTU':
                 self.client_global = _buat_client_rtu(
@@ -607,6 +652,15 @@ class ModbusApp(QMainWindow):
         self.txt_host.setText(config.get('host', '127.0.0.1'))
         self.spin_tcp_port.setValue(int(config.get('tcp_port', 502)))
         self.spin_timeout.setValue(float(config.get('timeout', 1.0)))
+
+        # FIX: preset port serial sebelumnya tidak pernah diterapkan kembali
+        # (kolom 'port' pada config diabaikan sepenuhnya). Kini dicoba dipilih
+        # ulang jika port tersebut masih terdeteksi di combo_port.
+        port_tersimpan = config.get('port', '')
+        if port_tersimpan:
+            idx_port = self.combo_port.findText(port_tersimpan)
+            if idx_port >= 0:
+                self.combo_port.setCurrentIndex(idx_port)
 
     def manajemen_interlock_tombol(self, tab_aktif, status_reset=False):
         kondisi = status_reset
@@ -1357,4 +1411,3 @@ if __name__ == "__main__":
     window = ModbusApp()
     window.show()
     sys.exit(app.exec_())
-
