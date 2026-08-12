@@ -666,9 +666,17 @@ class ModbusApp(QMainWindow):
         kondisi = status_reset
         if tab_aktif != "scan_id": self.btn_start_id_scan.setEnabled(kondisi)
         if tab_aktif != "scan_reg": self.btn_start_reg_scan.setEnabled(kondisi)
-        if tab_aktif != "pool": 
+        if tab_aktif != "pool":
             self.btn_toggle_pool.setEnabled(kondisi)
-            self.btn_single_read.setEnabled(kondisi)
+        # FIX BUG: "Baca Sekali" memakai objek thread yang SAMA (self.thread_pooler)
+        # dengan polling otomatis. Sebelumnya baris ini ada di dalam blok
+        # "if tab_aktif != 'pool'", sehingga saat polling AKTIF (tab_aktif == 'pool')
+        # tombol Baca Sekali tetap ikut aktif. Kalau diklik, thread polling yang
+        # sedang berjalan akan tertimpa/terlantar (orphan) dan tombol "Hentikan
+        # Polling" jadi tidak berfungsi lagi karena sudah menunjuk ke thread baru
+        # yang bukan polling. Sekarang tombol ini SELALU ikut dikunci setiap kali
+        # ada operasi lain (termasuk polling) yang sedang berjalan.
+        self.btn_single_read.setEnabled(kondisi)
         if tab_aktif != "log": self.btn_toggle_logger.setEnabled(kondisi)
         if tab_aktif != "write": self.btn_execute_write.setEnabled(kondisi)
 
@@ -961,6 +969,13 @@ class ModbusApp(QMainWindow):
 
         if not self.client_global or not self.client_global.connected:
             self._set_status("Error: Koneksi utama belum aktif.")
+            return
+
+        # FIX BUG: penjaga tambahan (selain penguncian tombol di atas) agar
+        # "Baca Sekali" tidak pernah menimpa thread_pooler yang masih berjalan
+        # (baik dari polling maupun dari klik ganda pada baca sekali).
+        if tunggal and self.thread_pooler and self.thread_pooler.isRunning():
+            self._set_status("Masih ada pembacaan/polling yang berjalan, tunggu selesai dahulu.")
             return
 
         target_device_id = self.spin_read_slave.value()
@@ -1258,6 +1273,22 @@ class ModbusApp(QMainWindow):
         jalur, _ = QFileDialog.getSaveFileName(self, "Simpan Log Sebagai", "modbus_log.csv", "CSV Files (*.csv)")
         if jalur: self.txt_csv_path.setText(jalur)
 
+    def _buat_header_csv_logger(self, reg_awal, jumlah, tipe_reg, encoding):
+        """Bangun header CSV dengan pemasangan register yang identik dengan
+        logika decode di proses_data_logger_thread, supaya jumlah kolom
+        header selalu sinkron dengan jumlah kolom data yang benar-benar ditulis."""
+        header = []
+        is_float = tipe_reg in ('Holding', 'Input') and "32-bit" in encoding and jumlah >= 2
+        i = 0
+        while i < jumlah:
+            if is_float and i + 1 < jumlah:
+                header.append(f"Reg_{reg_awal + i}-{reg_awal + i + 1}")
+                i += 2
+            else:
+                header.append(f"Reg_{reg_awal + i}")
+                i += 1
+        return header
+
     def toggle_logger(self):
         if self.thread_logger and self.thread_logger.isRunning():
             self.thread_logger.apakah_berjalan = False
@@ -1286,9 +1317,20 @@ class ModbusApp(QMainWindow):
                 file_baru = not os.path.exists(jalur_csv) or os.path.getsize(jalur_csv) == 0
                 if file_baru:
                     with open(jalur_csv, 'w', newline='') as f:
-                        jumlah_final = self.spin_log_count.value()
-                        reg_awal = self.spin_log_addr.value()
-                        header = ["Timestamp"] + [f"Reg_{reg_awal + i}" for i in range(jumlah_final)]
+                        # FIX BUG: header sebelumnya selalu membuat 1 kolom per
+                        # register (mis. 4 register -> 4 kolom "Reg_x"), padahal
+                        # kalau encoding-nya 32-bit FLOAT, proses_data_logger_thread
+                        # menggabungkan tiap 2 register jadi 1 nilai float, sehingga
+                        # baris data yang tersimpan hanya punya separuh kolom dari
+                        # header -> data di CSV jadi bergeser/tidak sinkron dengan
+                        # header. Header sekarang dibangun dengan logika pemasangan
+                        # register yang SAMA PERSIS dengan proses_data_logger_thread.
+                        header = ["Timestamp"] + self._buat_header_csv_logger(
+                            self.spin_log_addr.value(),
+                            self.spin_log_count.value(),
+                            self.combo_log_type.currentText(),
+                            self.combo_log_encoding.currentText()
+                        )
                         csv.writer(f).writerow(header)
             except Exception as e:
                 self.txt_logger_monitor.append(f"Gagal tulis header CSV: {str(e)}")
@@ -1308,7 +1350,14 @@ class ModbusApp(QMainWindow):
         if target_tab != "logger": return
         stempel = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         hasil_decoded_list = []
-        is_float = "32-bit" in encoding and len(nilai_mentah) >= 2
+        # FIX BUG: sebelumnya hanya mengecek "32-bit" in encoding tanpa memeriksa
+        # tipe register. Kalau tipe register yang dipilih Coil/Discrete Input
+        # tapi dropdown encoding masih menunjuk salah satu format FLOAT (bekas
+        # pilihan sebelumnya), nilai bit (0/1) akan ikut "didekode" seolah-olah
+        # pasangan register 16-bit -> menghasilkan angka float yang tidak berarti.
+        # Sekarang decode float hanya dilakukan jika tipe register-nya Holding/Input.
+        is_float = (self.combo_log_type.currentText() in ('Holding', 'Input')
+                    and "32-bit" in encoding and len(nilai_mentah) >= 2)
 
         i = 0
         while i < len(nilai_mentah):
@@ -1390,10 +1439,18 @@ class ModbusApp(QMainWindow):
     # CLOSE EVENT
     # ==================================================================
     def matikan_semua_thread_aktif(self):
+        # FIX: batas tunggu sebelumnya tetap 1000ms walau timeout komunikasi
+        # yang dikonfigurasi user bisa sampai 30 detik. Kalau sebuah thread
+        # sedang menunggu balasan Modbus (blocking read) lebih dari 1 detik,
+        # thread itu belum sempat berhenti saat closeEvent tetap melanjutkan
+        # menutup koneksi -> thread latar masih memakai client yang sudah
+        # ditutup dan berisiko exception/crash saat aplikasi keluar.
+        # Sekarang batas tunggu disesuaikan dengan timeout komunikasi yang aktif.
+        batas_tunggu_ms = int(self.spin_timeout.value() * 1000) + 500
         for th in [self.thread_pemindai, self.thread_pooler, self.thread_logger]:
             if th and th.isRunning():
                 th.apakah_berjalan = False
-                th.wait(1000)
+                th.wait(batas_tunggu_ms)
 
     def closeEvent(self, event):
         self.matikan_semua_thread_aktif()
