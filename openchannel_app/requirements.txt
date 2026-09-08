@@ -1,0 +1,12 @@
+PyQt5>=5.15
+
+# Opsional - hanya diperlukan untuk export riwayat kalkulasi ke Excel (.xlsx)
+# Export ke CSV tetap berfungsi tanpa openpyxl
+openpyxl>=3.0
+
+# Opsional - hanya diperlukan untuk fitur tab "Modbus RTU - Pembacaan Sensor"
+# Tanpa kedua modul ini, aplikasi tetap berjalan normal (tab kalkulasi manual
+# tidak terpengaruh), namun fitur pembacaan sensor akan menampilkan pesan
+# error yang jelas saat digunakan.
+pymodbus>=3.0
+pyserial>=3.5
