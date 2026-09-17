@@ -79,6 +79,35 @@ def get_modbus_device_kwargs(device_id):
         
     return {dev_key: device_id}
 
+
+def client_terhubung(client):
+    """Wrapper kompatibilitas status koneksi antar versi pymodbus.
+
+    pymodbus >= 3.0 menyediakan properti `.connected` pada client.
+    pymodbus 2.x (mis. 2.5.3 yang masih dipakai di beberapa board Raspberry
+    Pi/embedded) TIDAK memiliki atribut ini sama sekali - mengaksesnya
+    langsung memicu AttributeError ('ModbusSerialClient' object has no
+    attribute 'connected'). Versi 2.x hanya menyediakan method
+    is_socket_open() untuk keperluan yang sama.
+
+    Fungsi ini mencoba `.connected` dulu (versi baru), lalu fallback ke
+    is_socket_open() (versi lama), sehingga seluruh kode di aplikasi ini
+    bisa memakai satu pemanggilan yang sama tanpa peduli versi pymodbus
+    yang terpasang."""
+    if client is None:
+        return False
+    if hasattr(client, 'connected'):
+        try:
+            return bool(client.connected)
+        except Exception:
+            pass
+    if hasattr(client, 'is_socket_open'):
+        try:
+            return bool(client.is_socket_open())
+        except Exception:
+            return False
+    return False
+
 try:
     from pymodbus.client import ModbusSerialClient, ModbusTcpClient
 except ImportError:
@@ -343,7 +372,7 @@ class ModbusScannerThread(QThread):
         self.apakah_berjalan = True
 
     def run(self):
-        if not self.client or not self.client.connected:
+        if not self.client or not client_terhubung(self.client):
             self.sinyal_error.emit("Master Modbus Utama belum terhubung!")
             self.sinyal_selesai.emit()
             return
@@ -470,7 +499,7 @@ class ModbusPoolerLoggerThread(QThread):
             # coba sambung ulang otomatis dengan backoff (0.5s, 1s, 2s, ...
             # sampai maksimum) alih-alih terus gagal diam-diam sampai
             # dihentikan manual oleh user.
-            if not self.client.connected:
+            if not client_terhubung(self.client):
                 if not self.auto_reconnect:
                     self.sinyal_kesalahan.emit("Koneksi terputus (auto-reconnect nonaktif).", self.target_tab)
                     break
@@ -500,7 +529,7 @@ class ModbusPoolerLoggerThread(QThread):
 
             kunci_komunikasi.lock()
             try:
-                if self.client.connected:
+                if client_terhubung(self.client):
                     res = baca_register_modbus(self.client, tipe_reg, reg_awal, jumlah, target_device_id)
                     if res and res.isError():
                         statistik_global.catat_gagal()
@@ -555,7 +584,7 @@ class TagListReaderThread(QThread):
 
         percobaan_reconnect = 0
         while self.apakah_berjalan:
-            if not self.client.connected:
+            if not client_terhubung(self.client):
                 if not self.auto_reconnect:
                     self.sinyal_kesalahan.emit("Koneksi terputus (auto-reconnect nonaktif).", "tag")
                     break
@@ -696,6 +725,13 @@ class ModbusApp(QMainWindow):
         aksi_muat_job.triggered.connect(self.muat_preset_pekerjaan)
         menu_file.addAction(aksi_simpan_job)
         menu_file.addAction(aksi_muat_job)
+        menu_file.addSeparator()
+
+        aksi_keluar = QAction("Keluar", self)
+        aksi_keluar.setShortcut("Ctrl+Q")
+        aksi_keluar.setToolTip("Tutup aplikasi (semua koneksi/thread yang aktif akan dihentikan lebih dahulu).")
+        aksi_keluar.triggered.connect(self.close)
+        menu_file.addAction(aksi_keluar)
 
         menu_export = menubar.addMenu("Export Data")
         aksi_exp_id  = QAction("Export Hasil Scan ID ke CSV", self)
@@ -1325,7 +1361,7 @@ class ModbusApp(QMainWindow):
         self.tabs.addTab(tab, "Pemindai Device ID")
 
     def eksekusi_scan_id(self):
-        if not self.client_global or not self.client_global.connected:
+        if not self.client_global or not client_terhubung(self.client_global):
             self._set_status("Error: Hubungkan koneksi utama terlebih dahulu!")
             return
         if self.spin_start_id.value() > self.spin_end_id.value():
@@ -1436,7 +1472,7 @@ class ModbusApp(QMainWindow):
         self.tabs.addTab(tab, "Pemindai Peta Register")
 
     def eksekusi_scan_register(self):
-        if not self.client_global or not self.client_global.connected:
+        if not self.client_global or not client_terhubung(self.client_global):
             self._set_status("Error: Koneksi utama belum aktif!")
             return
         if self.spin_reg_scan_start.value() > self.spin_reg_scan_end.value():
@@ -1554,7 +1590,7 @@ class ModbusApp(QMainWindow):
             self._set_status("Polling dihentikan.")
             return
 
-        if not self.client_global or not self.client_global.connected:
+        if not self.client_global or not client_terhubung(self.client_global):
             self._set_status("Error: Koneksi utama belum aktif.")
             return
 
@@ -1733,7 +1769,7 @@ class ModbusApp(QMainWindow):
         self.tabs.addTab(tab, "Write Register / Coil")
 
     def eksekusi_penulisan_modbus(self):
-        if not self.client_global or not self.client_global.connected:
+        if not self.client_global or not client_terhubung(self.client_global):
             QMessageBox.critical(self, "Error", "Master Modbus belum terhubung!")
             return
 
@@ -2030,7 +2066,7 @@ class ModbusApp(QMainWindow):
             self._set_status("Logging dihentikan.")
             return
 
-        if not self.client_global or not self.client_global.connected:
+        if not self.client_global or not client_terhubung(self.client_global):
             self._set_status("Error: Koneksi utama belum aktif!")
             return
 
@@ -2375,7 +2411,7 @@ class ModbusApp(QMainWindow):
             self._set_status("Polling daftar tag dihentikan.")
             return
 
-        if not self.client_global or not self.client_global.connected:
+        if not self.client_global or not client_terhubung(self.client_global):
             self._set_status("Error: Koneksi utama belum aktif.")
             return
 
