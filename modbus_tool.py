@@ -1310,7 +1310,7 @@ class ModbusApp(QMainWindow):
         
         grid_kiri.addWidget(QLabel("ID Awal:"), 0, 0)
         self.spin_start_id = QSpinBox()
-        self.spin_start_id.setRange(1, 247)
+        self.spin_start_id.setRange(1, 255)
         self.spin_start_id.setValue(1)
         grid_kiri.addWidget(self.spin_start_id, 0, 1)
 
@@ -1421,6 +1421,7 @@ class ModbusApp(QMainWindow):
         grid_kiri.addWidget(QLabel("Target ID:"), 0, 0)
         self.spin_reg_scan_slave = QSpinBox()
         self.spin_reg_scan_slave.setValue(1)
+        self.spin_reg_scan_slave.setRange(1, 255)
         grid_kiri.addWidget(self.spin_reg_scan_slave, 0, 1)
 
         grid_kiri.addWidget(QLabel("Jenis Register:"), 1, 0)
@@ -1529,6 +1530,7 @@ class ModbusApp(QMainWindow):
         grid_kiri.addWidget(QLabel("Target ID:"), 0, 0)
         self.spin_read_slave = QSpinBox()
         self.spin_read_slave.setValue(1)
+        self.spin_read_slave.setRange(1, 255)
         grid_kiri.addWidget(self.spin_read_slave, 0, 1)
 
         grid_kiri.addWidget(QLabel("Jenis Reg:"), 1, 0)
@@ -1709,6 +1711,7 @@ class ModbusApp(QMainWindow):
         grid_kiri.addWidget(QLabel("Target ID:"), 0, 0)
         self.spin_write_slave = QSpinBox()
         self.spin_write_slave.setValue(1)
+        self.spin_write_slave.setRange(1, 255)
         grid_kiri.addWidget(self.spin_write_slave, 0, 1)
 
         grid_kiri.addWidget(QLabel("Fungsi Tulis:"), 1, 0)
@@ -1927,6 +1930,7 @@ class ModbusApp(QMainWindow):
         grid_kiri.addWidget(QLabel("Target ID:"), 0, 0)
         self.spin_log_slave = QSpinBox()
         self.spin_log_slave.setValue(1)
+        self.spin_log_slave.setRange(1, 255)
         grid_kiri.addWidget(self.spin_log_slave, 0, 1)
 
         grid_kiri.addWidget(QLabel("Jenis Reg:"), 1, 0)
