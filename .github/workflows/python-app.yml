@@ -22,9 +22,13 @@ jobs:
           pip install pyinstaller -r requirements.txt
 
       - name: Build exe
-        run: pyinstaller --onefile --noconsole --name app modbus_tool.py
-
+        run: >
+          pyinstaller --onefile --noconsole
+          --name ModbusToolsKalingin
+          --collect-submodules pymodbus
+          NAMA_FILE_KAMU.py
+          
       - uses: actions/upload-artifact@v4
         with:
           name: app-windows
-          path: dist/app.exe
+          path: dist/Modbus_tools.exe
