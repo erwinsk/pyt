@@ -31,4 +31,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: app-windows
-          path: dist/Modbus_tools.exe
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Lihat isi dist
+        run: dir dist
