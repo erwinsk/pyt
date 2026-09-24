@@ -26,7 +26,7 @@ jobs:
           pyinstaller --onefile --noconsole
           --name ModbusToolsKalingin
           --collect-submodules pymodbus
-          NAMA_FILE_KAMU.py
+          modbus_tool.py
           
       - uses: actions/upload-artifact@v4
         with:
