@@ -384,10 +384,22 @@ class ModbusScannerThread(QThread):
             reg_uji  = int(self.parameter_scan.get('reg_uji', 0))
             total    = id_akhir - id_awal + 1
 
+            # FIX PERFORMA: sebelumnya sinyal progres dikirim di SETIAP
+            # iterasi (untuk scan ID bisa sampai 255x, untuk scan register
+            # bisa puluhan ribu kali). Tiap emit sinyal antar-thread masuk
+            # ke antrean event loop GUI dan memicu update label/progress bar
+            # - pada scan register dengan rentang besar, ini bisa membanjiri
+            # event loop dan membuat UI terasa lag walau scan sendiri
+            # berjalan di background thread. Sekarang progres hanya dikirim
+            # saat NILAI PERSENnya berubah (maksimum ~100 kali per scan,
+            # berapa pun jumlah alamat yang dipindai).
+            progres_terakhir = -1
             for idx, slave_id in enumerate(range(id_awal, id_akhir + 1)):
                 if not self.apakah_berjalan: break
                 progres = int(((idx + 1) / total) * 100)
-                self.sinyal_progres.emit(progres, f"Memindai Device ID: {slave_id}...")
+                if progres != progres_terakhir:
+                    self.sinyal_progres.emit(progres, f"Memindai Device ID: {slave_id}...")
+                    progres_terakhir = progres
 
                 kunci_komunikasi.lock()
                 try:
@@ -426,10 +438,16 @@ class ModbusScannerThread(QThread):
             # bisa didekode jika register yang terbaca mencukupi.
             jumlah_word = dapatkan_jumlah_word(encoding)
 
+            # FIX PERFORMA: sama seperti scan ID - throttle sinyal progres
+            # agar hanya terkirim saat persentasenya berubah, penting untuk
+            # scan register yang rentangnya bisa sangat besar.
+            progres_terakhir = -1
             for idx, reg in enumerate(daftar_reg):
                 if not self.apakah_berjalan: break
                 progres = int(((idx + 1) / len(daftar_reg)) * 100)
-                self.sinyal_progres.emit(progres, f"Memindai Register: {reg}...")
+                if progres != progres_terakhir:
+                    self.sinyal_progres.emit(progres, f"Memindai Register: {reg}...")
+                    progres_terakhir = progres
 
                 jumlah_baca = jumlah_word if tipe_reg in ['Holding', 'Input'] else 1
 
@@ -662,7 +680,7 @@ class TagListReaderThread(QThread):
 class ModbusApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Modbus Tools Kalingin v4.17")
+        self.setWindowTitle("Modbus Tools Kalingin v17.0")
         self.resize(1100, 860)
 
         self.client_global    = None
@@ -1316,7 +1334,7 @@ class ModbusApp(QMainWindow):
 
         grid_kiri.addWidget(QLabel("ID Akhir:"), 1, 0)
         self.spin_end_id = QSpinBox()
-        self.spin_end_id.setRange(1, 247)
+        self.spin_end_id.setRange(1, 255)
         self.spin_end_id.setValue(10)
         grid_kiri.addWidget(self.spin_end_id, 1, 1)
 
@@ -1395,17 +1413,28 @@ class ModbusApp(QMainWindow):
         self._set_status(f"Scan ID selesai. {self.tabel_hasil_id.rowCount()} device ditemukan.")
 
     def tampilkan_hasil_scan_id(self, hasil):
-        for slave_id, status in hasil:
-            baris = self.tabel_hasil_id.rowCount()
-            self.tabel_hasil_id.insertRow(baris)
-            item_id = QTableWidgetItem(str(slave_id))
-            item_id.setTextAlignment(Qt.AlignCenter)
-            item_status = QTableWidgetItem(status)
-            item_status.setTextAlignment(Qt.AlignCenter)
-            item_status.setForeground(QColor(WARNA_SUKSES))
-            font = QFont(); font.setBold(True); item_status.setFont(font)
-            self.tabel_hasil_id.setItem(baris, 0, item_id)
-            self.tabel_hasil_id.setItem(baris, 1, item_status)
+        # FIX PERFORMA: sebelumnya baris ditambahkan satu-per-satu dengan
+        # insertRow() di dalam loop. Dengan mode resize kolom "Stretch",
+        # setiap insertRow() memicu kalkulasi ulang tata letak tabel -
+        # untuk hasil scan yang banyak (mis. scan 1-255 semuanya merespon),
+        # ini membuat UI membeku sesaat saat hasil scan ditampilkan.
+        # Sekarang: updates dimatikan sementara + jumlah baris dialokasikan
+        # sekaligus di awal (setRowCount), sehingga hanya 1 kali kalkulasi
+        # tata letak di akhir, bukan N kali.
+        self.tabel_hasil_id.setUpdatesEnabled(False)
+        try:
+            self.tabel_hasil_id.setRowCount(len(hasil))
+            for baris, (slave_id, status) in enumerate(hasil):
+                item_id = QTableWidgetItem(str(slave_id))
+                item_id.setTextAlignment(Qt.AlignCenter)
+                item_status = QTableWidgetItem(status)
+                item_status.setTextAlignment(Qt.AlignCenter)
+                item_status.setForeground(QColor(WARNA_SUKSES))
+                font = QFont(); font.setBold(True); item_status.setFont(font)
+                self.tabel_hasil_id.setItem(baris, 0, item_id)
+                self.tabel_hasil_id.setItem(baris, 1, item_status)
+        finally:
+            self.tabel_hasil_id.setUpdatesEnabled(True)
 
 
     # ==================================================================
@@ -1420,8 +1449,12 @@ class ModbusApp(QMainWindow):
 
         grid_kiri.addWidget(QLabel("Target ID:"), 0, 0)
         self.spin_reg_scan_slave = QSpinBox()
+        # FIX: sebelumnya tidak diberi setRange() sehingga QSpinBox memakai
+        # rentang default 0-99, membuat Target ID tidak bisa diisi lebih
+        # dari 99 walau Modbus unit ID valid sampai 255. Sekarang rentang
+        # dibuka penuh 0-255.
+        self.spin_reg_scan_slave.setRange(0, 255)
         self.spin_reg_scan_slave.setValue(1)
-        self.spin_reg_scan_slave.setRange(1, 255)
         grid_kiri.addWidget(self.spin_reg_scan_slave, 0, 1)
 
         grid_kiri.addWidget(QLabel("Jenis Register:"), 1, 0)
@@ -1509,12 +1542,18 @@ class ModbusApp(QMainWindow):
         self._set_status(f"Scan register selesai. {self.tabel_hasil_register.rowCount()} ditemukan.")
 
     def tampilkan_hasil_scan_register(self, hasil):
-        for reg, val_int, val_float in hasil:
-            baris = self.tabel_hasil_register.rowCount()
-            self.tabel_hasil_register.insertRow(baris)
-            self.tabel_hasil_register.setItem(baris, 0, QTableWidgetItem(str(reg)))
-            self.tabel_hasil_register.setItem(baris, 1, QTableWidgetItem(val_int))
-            self.tabel_hasil_register.setItem(baris, 2, QTableWidgetItem(val_float))
+        # FIX PERFORMA: sama seperti tampilkan_hasil_scan_id - hindari
+        # insertRow() satu-per-satu untuk hasil scan yang bisa berjumlah
+        # ribuan baris (mis. scan ribuan alamat register).
+        self.tabel_hasil_register.setUpdatesEnabled(False)
+        try:
+            self.tabel_hasil_register.setRowCount(len(hasil))
+            for baris, (reg, val_int, val_float) in enumerate(hasil):
+                self.tabel_hasil_register.setItem(baris, 0, QTableWidgetItem(str(reg)))
+                self.tabel_hasil_register.setItem(baris, 1, QTableWidgetItem(val_int))
+                self.tabel_hasil_register.setItem(baris, 2, QTableWidgetItem(val_float))
+        finally:
+            self.tabel_hasil_register.setUpdatesEnabled(True)
 
 
     # ==================================================================
@@ -1529,8 +1568,10 @@ class ModbusApp(QMainWindow):
 
         grid_kiri.addWidget(QLabel("Target ID:"), 0, 0)
         self.spin_read_slave = QSpinBox()
+        # FIX: sama seperti tab lain - rentang dibuka penuh 0-255 (default
+        # QSpinBox tanpa setRange() adalah 0-99).
+        self.spin_read_slave.setRange(0, 255)
         self.spin_read_slave.setValue(1)
-        self.spin_read_slave.setRange(1, 255)
         grid_kiri.addWidget(self.spin_read_slave, 0, 1)
 
         grid_kiri.addWidget(QLabel("Jenis Reg:"), 1, 0)
@@ -1634,21 +1675,36 @@ class ModbusApp(QMainWindow):
         try: self.tabel_reader_output.itemChanged.disconnect(self.tangkap_perubahan_keterangan_user)
         except TypeError: pass
 
-        self.tabel_reader_output.setRowCount(0)
-
-        # FIX: pairing register sekarang mengikuti kebutuhan word encoding
-        # yang dipilih (1/2/4 word) via dapatkan_jumlah_word(), bukan
-        # hardcode 2 (idx % 2 == 0). Ini memperbaiki tampilan saat tipe
-        # register bukan Holding/Input (Coil/Discrete) dan mendukung
-        # tipe baru 32-bit INT & 64-bit DOUBLE.
         jumlah_word = dapatkan_jumlah_word(encoding)
+
+        # FIX PERFORMA: sebelumnya tabel di-kosongkan (setRowCount(0)) lalu
+        # dibangun ulang total dengan insertRow() pada SETIAP siklus polling
+        # (bisa setiap 0.1 detik). Dengan header mode "Stretch", tiap
+        # insertRow() memicu kalkulasi ulang tata letak kolom - pada
+        # polling interval singkat/jumlah register besar, ini membuat UI
+        # terasa lag terus-menerus selama polling berjalan, bukan cuma
+        # sesekali. Sekarang baris tabel HANYA dibangun ulang kalau daftar
+        # alamat/tipe register/device ID benar-benar berubah (mis. user
+        # mengganti konfigurasi baca); selama konfigurasi tetap sama, siklus
+        # berikutnya cukup meng-update isi sel yang sudah ada (setText),
+        # jauh lebih murah daripada insertRow berulang.
+        struktur_baru = (tuple(list_alamat), tipe_reg, device_id)
+        perlu_rebuild = getattr(self, '_reader_struktur_terakhir', None) != struktur_baru
+
+        if perlu_rebuild:
+            self.tabel_reader_output.setUpdatesEnabled(False)
+            self.tabel_reader_output.setRowCount(len(list_alamat))
+            for baris in range(len(list_alamat)):
+                for kolom in range(4):
+                    item = QTableWidgetItem("")
+                    if kolom != 3:
+                        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.tabel_reader_output.setItem(baris, kolom, item)
+            self._reader_struktur_terakhir = struktur_baru
+
         for idx, addr in enumerate(list_alamat):
-            baris = self.tabel_reader_output.rowCount()
-            self.tabel_reader_output.insertRow(baris)
-            
-            item_addr = QTableWidgetItem(f"Reg {addr}")
-            item_addr.setFlags(item_addr.flags() & ~Qt.ItemIsEditable)
-            self.tabel_reader_output.setItem(baris, 0, item_addr)
+            item_addr = self.tabel_reader_output.item(idx, 0)
+            item_addr.setText(f"Reg {addr}")
 
             if tipe_reg in ['Holding', 'Input']:
                 if encoding == 'Signed 16-bit INT':
@@ -1664,26 +1720,32 @@ class ModbusApp(QMainWindow):
                 val_int = str(nilai_mentah[idx])
                 val_float = "-"
 
-            item_val_int = QTableWidgetItem(val_int)
-            item_val_int.setFlags(item_val_int.flags() & ~Qt.ItemIsEditable)
-            item_val_float = QTableWidgetItem(val_float)
-            item_val_float.setFlags(item_val_float.flags() & ~Qt.ItemIsEditable)
-            
+            item_val_int = self.tabel_reader_output.item(idx, 1)
+            item_val_float = self.tabel_reader_output.item(idx, 2)
+
             kunci_cache_int = f"{device_id}_{tipe_reg}_{addr}_int"
             if kunci_cache_int in self.nilai_sebelumnya and self.nilai_sebelumnya[kunci_cache_int] != val_int:
                 item_val_int.setBackground(QColor(WARNA_HIGHLIGHT))
+            else:
+                item_val_int.setBackground(QColor(Qt.transparent))
             self.nilai_sebelumnya[kunci_cache_int] = val_int
 
             kunci_cache_float = f"{device_id}_{tipe_reg}_{addr}_flt"
             if kunci_cache_float in self.nilai_sebelumnya and self.nilai_sebelumnya[kunci_cache_float] != val_float:
                 item_val_float.setBackground(QColor(WARNA_HIGHLIGHT))
+            else:
+                item_val_float.setBackground(QColor(Qt.transparent))
             self.nilai_sebelumnya[kunci_cache_float] = val_float
 
-            self.tabel_reader_output.setItem(baris, 1, item_val_int)
-            self.tabel_reader_output.setItem(baris, 2, item_val_float)
+            item_val_int.setText(val_int)
+            item_val_float.setText(val_float)
 
-            ket = self.memori_keterangan_user.get(f"{device_id}_{tipe_reg}_{addr}", "")
-            self.tabel_reader_output.setItem(baris, 3, QTableWidgetItem(ket))
+            if perlu_rebuild:
+                ket = self.memori_keterangan_user.get(f"{device_id}_{tipe_reg}_{addr}", "")
+                self.tabel_reader_output.item(idx, 3).setText(ket)
+
+        if perlu_rebuild:
+            self.tabel_reader_output.setUpdatesEnabled(True)
 
         self.tabel_reader_output.itemChanged.connect(self.tangkap_perubahan_keterangan_user)
 
@@ -1710,8 +1772,9 @@ class ModbusApp(QMainWindow):
 
         grid_kiri.addWidget(QLabel("Target ID:"), 0, 0)
         self.spin_write_slave = QSpinBox()
+        # FIX: rentang dibuka penuh 0-255.
+        self.spin_write_slave.setRange(0, 255)
         self.spin_write_slave.setValue(1)
-        self.spin_write_slave.setRange(1, 255)
         grid_kiri.addWidget(self.spin_write_slave, 0, 1)
 
         grid_kiri.addWidget(QLabel("Fungsi Tulis:"), 1, 0)
@@ -1795,7 +1858,7 @@ class ModbusApp(QMainWindow):
                 and_mask = int(bagian[0], 0)
                 or_mask = int(bagian[1], 0)
             except ValueError as e:
-                self.txt_write_log.append(f"[{waktu_skrg}] <font color='red'>Error Parsing Mask: {str(e)}</font>")
+                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='red'>Error Parsing Mask: {str(e)}</font>")
                 return
         elif "Multiple Coils" not in tipe_fungsi:
             try:
@@ -1806,7 +1869,7 @@ class ModbusApp(QMainWindow):
                 else:
                     register_final = enkode_nilai_ke_register(input_user, self.combo_write_encoding.currentText())
             except ValueError as e:
-                self.txt_write_log.append(f"[{waktu_skrg}] <font color='red'>Error Parsing Data: {str(e)}</font>")
+                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='red'>Error Parsing Data: {str(e)}</font>")
                 return
 
         # Fitur keamanan: minta konfirmasi sebelum benar-benar menulis ke
@@ -1824,7 +1887,7 @@ class ModbusApp(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if jawaban != QMessageBox.Yes:
-                self.txt_write_log.append(f"[{waktu_skrg}] Penulisan dibatalkan oleh pengguna.")
+                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] Penulisan dibatalkan oleh pengguna.")
                 return
 
         self.manajemen_interlock_tombol("write")
@@ -1858,7 +1921,7 @@ class ModbusApp(QMainWindow):
 
             if res and res.isError():
                 statistik_global.catat_gagal()
-                self.txt_write_log.append(f"[{waktu_skrg}] <font color='red'>Gagal! {terjemahkan_respon_modbus(res)}</font>")
+                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='red'>Gagal! {terjemahkan_respon_modbus(res)}</font>")
             elif res:
                 statistik_global.catat_sukses()
                 # Tangkap nilai data yang dieksekusi berdasarkan jenis perintah
@@ -1875,14 +1938,14 @@ class ModbusApp(QMainWindow):
                     data_kirim = str(register_final)
                 
                 # Tampilkan data_kirim pada log interface
-                self.txt_write_log.append(f"[{waktu_skrg}] <font color='green'>Transmisi Sukses → Addr: {alamat_tujuan} | ID: {target_device_id} | Data: {data_kirim}</font>")
+                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='green'>Transmisi Sukses → Addr: {alamat_tujuan} | ID: {target_device_id} | Data: {data_kirim}</font>")
 
                 # Fitur: baca ulang untuk verifikasi nilai benar-benar tersimpan
                 if self.chk_verify_write.isChecked() and "Mask Write" not in tipe_fungsi:
                     self._verifikasi_baca_ulang(tipe_fungsi, alamat_tujuan, target_device_id, register_final, val_bool, input_user)
         except Exception as e:
             catat_kesalahan("Eksekusi tulis Modbus", e)
-            self.txt_write_log.append(f"[{waktu_skrg}] <font color='red'>Kesalahan Hardware: {str(e)}</font>")
+            self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='red'>Kesalahan Hardware: {str(e)}</font>")
         finally:
             kunci_komunikasi.unlock()
             self.manajemen_interlock_tombol(None, status_reset=True)
@@ -1898,22 +1961,22 @@ class ModbusApp(QMainWindow):
                 res = baca_register_modbus(self.client_global, "Coil", alamat, jumlah, device_id)
                 if res and not res.isError():
                     nilai_terbaca = res.bits[:jumlah]
-                    self.txt_write_log.append(f"[{waktu_skrg}] Verifikasi baca ulang Coil: {nilai_terbaca}")
+                    self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] Verifikasi baca ulang Coil: {nilai_terbaca}")
                 else:
-                    self.txt_write_log.append(f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {terjemahkan_respon_modbus(res)}</font>")
+                    self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {terjemahkan_respon_modbus(res)}</font>")
             else:
                 jumlah = max(1, len(register_final))
                 res = baca_register_modbus(self.client_global, "Holding", alamat, jumlah, device_id)
                 if res and not res.isError():
                     if list(res.registers[:jumlah]) == register_final:
-                        self.txt_write_log.append(f"[{waktu_skrg}] <font color='green'>Verifikasi OK: nilai di perangkat cocok ({list(res.registers[:jumlah])}).</font>")
+                        self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='green'>Verifikasi OK: nilai di perangkat cocok ({list(res.registers[:jumlah])}).</font>")
                     else:
-                        self.txt_write_log.append(f"[{waktu_skrg}] <font color='orange'>Verifikasi TIDAK cocok! Diharapkan {register_final}, terbaca {list(res.registers[:jumlah])}.</font>")
+                        self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='orange'>Verifikasi TIDAK cocok! Diharapkan {register_final}, terbaca {list(res.registers[:jumlah])}.</font>")
                 else:
-                    self.txt_write_log.append(f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {terjemahkan_respon_modbus(res)}</font>")
+                    self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {terjemahkan_respon_modbus(res)}</font>")
         except Exception as e:
             catat_kesalahan("Verifikasi baca ulang write", e)
-            self.txt_write_log.append(f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {str(e)}</font>")
+            self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {str(e)}</font>")
 
 
     # ==================================================================
@@ -1929,8 +1992,9 @@ class ModbusApp(QMainWindow):
         
         grid_kiri.addWidget(QLabel("Target ID:"), 0, 0)
         self.spin_log_slave = QSpinBox()
+        # FIX: rentang dibuka penuh 0-255.
+        self.spin_log_slave.setRange(0, 255)
         self.spin_log_slave.setValue(1)
-        self.spin_log_slave.setRange(1, 255)
         grid_kiri.addWidget(self.spin_log_slave, 0, 1)
 
         grid_kiri.addWidget(QLabel("Jenis Reg:"), 1, 0)
@@ -2050,7 +2114,7 @@ class ModbusApp(QMainWindow):
             jalur_baru = f"{base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext or '.csv'}"
             self.txt_csv_path.setText(jalur_baru)
             self._tulis_header_csv_logger(jalur_baru)
-            self.txt_logger_monitor.append(f"<i>Rotasi file CSV → {jalur_baru}</i>")
+            self._log_dibatasi(self.txt_logger_monitor, f"<i>Rotasi file CSV → {jalur_baru}</i>")
 
     def _tulis_header_csv_logger(self, jalur_csv):
         header = ["Timestamp"] + self._buat_header_csv_logger(
@@ -2101,7 +2165,7 @@ class ModbusApp(QMainWindow):
                 self._tanggal_csv_aktif = datetime.now().strftime("%Y%m%d")
             except Exception as e:
                 catat_kesalahan("Tulis header CSV logger", e)
-                self.txt_logger_monitor.append(f"Gagal tulis header CSV: {str(e)}")
+                self._log_dibatasi(self.txt_logger_monitor, f"Gagal tulis header CSV: {str(e)}")
                 self.manajemen_interlock_tombol(None, status_reset=True)
                 return
 
@@ -2148,7 +2212,7 @@ class ModbusApp(QMainWindow):
                 i += 1
 
         str_decoded = ", ".join(hasil_decoded_list)
-        self.txt_logger_monitor.append(f"[{stempel}] Raw: {nilai_mentah} → Decoded: {str_decoded}")
+        self._log_dibatasi(self.txt_logger_monitor, f"[{stempel}] Raw: {nilai_mentah} → Decoded: {str_decoded}")
 
         if self.chk_save_csv.isChecked():
             try:
@@ -2157,35 +2221,59 @@ class ModbusApp(QMainWindow):
                     csv.writer(f).writerow([stempel] + hasil_decoded_list)
             except Exception as e:
                 catat_kesalahan("Tulis baris CSV logger", e)
-                self.txt_logger_monitor.append(f"<font color='red'>Gagal simpan CSV: {str(e)}</font>")
+                self._log_dibatasi(self.txt_logger_monitor, f"<font color='red'>Gagal simpan CSV: {str(e)}</font>")
 
     def proses_kesalahan_thread(self, pesan_kesalahan, target_tab):
         if target_tab == "logger":
-            self.txt_logger_monitor.append(f"<font color='red'>[Kegagalan] {pesan_kesalahan}</font>")
+            self._log_dibatasi(self.txt_logger_monitor, f"<font color='red'>[Kegagalan] {pesan_kesalahan}</font>")
         elif target_tab == "tag":
-            self.txt_tag_monitor.append(f"<font color='red'>[Kegagalan] {pesan_kesalahan}</font>")
+            self._log_dibatasi(self.txt_tag_monitor, f"<font color='red'>[Kegagalan] {pesan_kesalahan}</font>")
 
     def proses_info_thread(self, pesan_info, target_tab):
         if target_tab == "logger":
-            self.txt_logger_monitor.append(f"<font color='#3498db'>[Info] {pesan_info}</font>")
+            self._log_dibatasi(self.txt_logger_monitor, f"<font color='#3498db'>[Info] {pesan_info}</font>")
         elif target_tab == "reader":
             self._set_status(pesan_info)
         elif target_tab == "tag":
-            self.txt_tag_monitor.append(f"<font color='#3498db'>[Info] {pesan_info}</font>")
+            self._log_dibatasi(self.txt_tag_monitor, f"<font color='#3498db'>[Info] {pesan_info}</font>")
+
+    def _log_dibatasi(self, text_edit: QTextEdit, baris_html: str, batas_baris: int = 500):
+        """Tambahkan baris ke QTextEdit monitor dengan batas jumlah baris.
+        FIX PERFORMA: sebelumnya semua log (logger, write, tag) memakai
+        append() polos tanpa batas. Pada sesi logging/polling yang berjalan
+        lama (berjam-jam), dokumen QTextEdit terus membesar tanpa henti -
+        setiap append() ke dokumen yang sudah besar menjadi semakin lambat
+        (Qt harus mengelola undo-stack & layout dari seluruh dokumen), dan
+        memori RAM ikut naik terus. Sekarang baris terlama otomatis dibuang
+        setelah jumlah baris melewati batas, sehingga biaya append() tetap
+        konstan berapa lama pun aplikasi berjalan."""
+        text_edit.append(baris_html)
+        dokumen = text_edit.document()
+        if dokumen.blockCount() > batas_baris:
+            kursor = text_edit.textCursor()
+            kursor.movePosition(kursor.Start)
+            kelebihan = dokumen.blockCount() - batas_baris
+            for _ in range(kelebihan):
+                kursor.select(kursor.BlockUnderCursor)
+                kursor.removeSelectedText()
+                kursor.deleteChar()  # buang newline sisa blok yang dihapus
 
     def _tampilkan_tentang(self):
         QMessageBox.about(
             self, "Tentang Aplikasi",
-            "<b>All-In-One Modbus Industrial Tool v16.0</b><br><br>"
-            "Aplikasi Master Modbus dengan Dukungan Semua Versi PyModbus<br><br>"
+            "<b>All-In-One Modbus Industrial Tool v17.0</b><br><br>"
+            "Aplikasi Master Modbus dengan Dukungan Semua Versi PyModbus (2.x &amp; 3.x)<br><br>"
             "Fitur pada versi ini:<br>"
+            "• Kompatibel pymodbus 2.x maupun 3.x (client_terhubung)<br>"
+            "• Unit/Slave ID mendukung penuh 0-255 di semua tab<br>"
             "• Auto-reconnect dengan backoff saat koneksi terputus<br>"
             "• Konfirmasi &amp; verifikasi baca-ulang sebelum/sesudah menulis<br>"
-            "• Filter pencarian pada tabel hasil scan<br>"
+            "• Filter pencarian (debounced) pada tabel hasil scan<br>"
             "• Tipe data 32-bit INT &amp; 64-bit DOUBLE, Mask Write Register (FC 22)<br>"
             "• Statistik kesehatan komunikasi (sukses/gagal/timeout)<br>"
             "• Preset pekerjaan lengkap, rotasi file CSV, mode gelap<br>"
-            "• Tab Daftar Tag untuk multi-read alamat non-kontinu dengan skala/offset<br><br>"
+            "• Tab Daftar Tag untuk multi-read alamat non-kontinu dengan skala/offset<br>"
+            "• Tabel & log dioptimasi (update-in-place, batch render, log dibatasi)<br><br>"
             f"Folder konfigurasi &amp; log: {DIR_CONFIG}"
         )
 
@@ -2196,30 +2284,47 @@ class ModbusApp(QMainWindow):
     def _bungkus_tabel_dengan_filter(self, tabel: QTableWidget, placeholder="Ketik untuk memfilter baris..."):
         """Bungkus sebuah QTableWidget dengan kotak pencarian di atasnya.
         Memudahkan menelusuri hasil scan yang jumlah barisnya banyak
-        (mis. scan 247 Device ID atau ribuan alamat register)."""
+        (mis. scan 255 Device ID atau ribuan alamat register)."""
         wadah = QWidget()
         layout = QVBoxLayout(wadah)
         layout.setContentsMargins(0, 0, 0, 0)
         kotak_filter = QLineEdit()
         kotak_filter.setPlaceholderText(placeholder)
-        kotak_filter.textChanged.connect(lambda teks: self._filter_baris_tabel(tabel, teks))
+
+        # FIX PERFORMA: sebelumnya filter dijalankan langsung di setiap
+        # textChanged (tiap ketikan 1 huruf), padahal filter memeriksa
+        # SEMUA baris x SEMUA kolom tabel. Untuk tabel besar (mis. hasil
+        # scan register 0-65535), ini membuat UI terasa tersendat/lag
+        # setiap kali mengetik di kotak pencarian. Sekarang pencarian
+        # di-debounce: baru dijalankan 250ms setelah pengguna berhenti
+        # mengetik, sehingga tabel besar tetap terasa responsif saat diketik.
+        timer_debounce = QTimer(wadah)
+        timer_debounce.setSingleShot(True)
+        timer_debounce.setInterval(250)
+        timer_debounce.timeout.connect(lambda: self._filter_baris_tabel(tabel, kotak_filter.text()))
+        kotak_filter.textChanged.connect(lambda _teks: timer_debounce.start())
+
         layout.addWidget(kotak_filter)
         layout.addWidget(tabel)
         return wadah
 
     def _filter_baris_tabel(self, tabel: QTableWidget, teks: str):
         teks = teks.strip().lower()
-        for baris in range(tabel.rowCount()):
-            if not teks:
-                tabel.setRowHidden(baris, False)
-                continue
-            cocok = False
-            for kolom in range(tabel.columnCount()):
-                item = tabel.item(baris, kolom)
-                if item and teks in item.text().lower():
-                    cocok = True
-                    break
-            tabel.setRowHidden(baris, not cocok)
+        tabel.setUpdatesEnabled(False)
+        try:
+            for baris in range(tabel.rowCount()):
+                if not teks:
+                    tabel.setRowHidden(baris, False)
+                    continue
+                cocok = False
+                for kolom in range(tabel.columnCount()):
+                    item = tabel.item(baris, kolom)
+                    if item and teks in item.text().lower():
+                        cocok = True
+                        break
+                tabel.setRowHidden(baris, not cocok)
+        finally:
+            tabel.setUpdatesEnabled(True)
 
     def _export_tabel_ke_csv(self, tabel: QTableWidget, nama_file_default: str):
         """Export isi QTableWidget ke file CSV yang dipilih user."""
@@ -2278,7 +2383,7 @@ class ModbusApp(QMainWindow):
 
         grid_kiri.addWidget(QLabel("Slave ID:"), 1, 0)
         self.spin_tag_slave = QSpinBox()
-        self.spin_tag_slave.setRange(0, 247)
+        self.spin_tag_slave.setRange(0, 255)
         self.spin_tag_slave.setValue(1)
         grid_kiri.addWidget(self.spin_tag_slave, 1, 1)
 
@@ -2346,7 +2451,14 @@ class ModbusApp(QMainWindow):
         self.tabel_tag.setHorizontalHeaderLabels(
             ["Nama", "Slave ID", "Tipe", "Alamat", "Encoding", "Skala", "Offset", "Nilai Mentah", "Nilai Akhir"]
         )
-        self.tabel_tag.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        # FIX PERFORMA: mode ResizeToContents menghitung ulang lebar semua
+        # kolom setiap kali ISI SEL berubah - karena tabel ini diperbarui
+        # tiap siklus polling (kolom Nilai Mentah/Nilai Akhir), mode ini
+        # membuat UI terasa berat pada interval polling singkat/tag banyak.
+        # Sekarang kolom di-pas-kan sekali di awal (lihat
+        # _render_ulang_tabel_tag), lalu mode diganti ke Interactive supaya
+        # pembaruan nilai berikutnya tidak memicu kalkulasi ulang lebar kolom.
+        self.tabel_tag.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.tabel_tag.setSelectionBehavior(QTableWidget.SelectRows)
         layout_kanan.addWidget(self.tabel_tag, 2)
 
@@ -2393,19 +2505,26 @@ class ModbusApp(QMainWindow):
         self._render_ulang_tabel_tag()
 
     def _render_ulang_tabel_tag(self):
-        self.tabel_tag.setRowCount(0)
-        for tag in self.daftar_tag:
-            baris = self.tabel_tag.rowCount()
-            self.tabel_tag.insertRow(baris)
-            nilai_kolom = [
-                tag.get('nama', ''), str(tag.get('slave_id', '')), tag.get('tipe_reg', ''),
-                str(tag.get('alamat', '')), tag.get('encoding', ''), str(tag.get('skala', '')),
-                str(tag.get('offset', '')), '-', '-'
-            ]
-            for kolom, teks in enumerate(nilai_kolom):
-                item = QTableWidgetItem(teks)
-                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self.tabel_tag.setItem(baris, kolom, item)
+        self.tabel_tag.setUpdatesEnabled(False)
+        try:
+            self.tabel_tag.setRowCount(0)
+            for tag in self.daftar_tag:
+                baris = self.tabel_tag.rowCount()
+                self.tabel_tag.insertRow(baris)
+                nilai_kolom = [
+                    tag.get('nama', ''), str(tag.get('slave_id', '')), tag.get('tipe_reg', ''),
+                    str(tag.get('alamat', '')), tag.get('encoding', ''), str(tag.get('skala', '')),
+                    str(tag.get('offset', '')), '-', '-'
+                ]
+                for kolom, teks in enumerate(nilai_kolom):
+                    item = QTableWidgetItem(teks)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.tabel_tag.setItem(baris, kolom, item)
+            # Pas-kan lebar kolom SEKALI di sini (bukan otomatis terus-menerus
+            # lewat ResizeToContents) - lihat catatan performa di atas.
+            self.tabel_tag.resizeColumnsToContents()
+        finally:
+            self.tabel_tag.setUpdatesEnabled(True)
 
     def eksekusi_baca_tag(self, tunggal=False):
         if not tunggal and self.thread_tag and self.thread_tag.isRunning():
@@ -2448,18 +2567,30 @@ class ModbusApp(QMainWindow):
 
     def proses_hasil_tag_thread(self, hasil):
         stempel = datetime.now().strftime("%H:%M:%S")
-        for baris, item_hasil in enumerate(hasil):
-            if baris >= self.tabel_tag.rowCount():
-                break
-            item_mentah = QTableWidgetItem(item_hasil['nilai_mentah'])
-            item_mentah.setFlags(item_mentah.flags() & ~Qt.ItemIsEditable)
-            item_akhir = QTableWidgetItem(item_hasil['nilai_akhir'])
-            item_akhir.setFlags(item_akhir.flags() & ~Qt.ItemIsEditable)
-            if item_hasil['status'] == 'ERROR':
-                item_akhir.setBackground(QColor(WARNA_GAGAL))
-            self.tabel_tag.setItem(baris, 7, item_mentah)
-            self.tabel_tag.setItem(baris, 8, item_akhir)
-        self.txt_tag_monitor.append(f"[{stempel}] Pembacaan {len(hasil)} tag selesai.")
+        # FIX PERFORMA: reuse item sel yang sudah ada (setText) alih-alih
+        # membuat objek QTableWidgetItem baru setiap siklus polling.
+        self.tabel_tag.setUpdatesEnabled(False)
+        try:
+            for baris, item_hasil in enumerate(hasil):
+                if baris >= self.tabel_tag.rowCount():
+                    break
+                item_mentah = self.tabel_tag.item(baris, 7)
+                if item_mentah is None:
+                    item_mentah = QTableWidgetItem()
+                    item_mentah.setFlags(item_mentah.flags() & ~Qt.ItemIsEditable)
+                    self.tabel_tag.setItem(baris, 7, item_mentah)
+                item_mentah.setText(item_hasil['nilai_mentah'])
+
+                item_akhir = self.tabel_tag.item(baris, 8)
+                if item_akhir is None:
+                    item_akhir = QTableWidgetItem()
+                    item_akhir.setFlags(item_akhir.flags() & ~Qt.ItemIsEditable)
+                    self.tabel_tag.setItem(baris, 8, item_akhir)
+                item_akhir.setText(item_hasil['nilai_akhir'])
+                item_akhir.setBackground(QColor(WARNA_GAGAL) if item_hasil['status'] == 'ERROR' else QColor(Qt.transparent))
+        finally:
+            self.tabel_tag.setUpdatesEnabled(True)
+        self._log_dibatasi(self.txt_tag_monitor, f"[{stempel}] Pembacaan {len(hasil)} tag selesai.")
 
 
     def matikan_semua_thread_aktif(self):
