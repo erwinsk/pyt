@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Ultimate PDF Compressor
+Comment=Kompres PDF menggunakan Ghostscript Engine
+# Sesuaikan path di bawah ini ke lokasi file hasil compile Anda
+Exec=/usr/bin/pdf-compressor-ultima
+# Sesuaikan path ke file gambar/icon jika ada
+Icon=/home/erwin/.local/share/icons/pdfcu.ico
+Terminal=false
+Categories=Office;Utility;
+Keywords=pdf;compress;ghostscript;

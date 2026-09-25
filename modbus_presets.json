@@ -1,0 +1,1 @@
+{"mode": "TCP", "port": "/dev/ttyS3", "baudrate": "9600", "parity": "N", "stopbits": "1", "bytesize": "8", "host": "10.10.0.2", "tcp_port": 502, "timeout": 1.0}
