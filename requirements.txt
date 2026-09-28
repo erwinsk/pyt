@@ -1,3 +1,7 @@
 PyQt5>=5.15,<6
 pymodbus>=3.6,<4
 pyserial>=3.5
+
+# Untuk modbus_tool.py, tab "Data Logger" opsi "Simpan ke MySQL" (opsional,
+# hanya perlu di-install kalau fitur ini dipakai):
+pymysql>=1.0

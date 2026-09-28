@@ -200,6 +200,94 @@ def terjemahkan_respon_modbus(res):
 
 
 # =====================================================================
+# LOGGER DATABASE (MySQL) — untuk Tab Data Logger
+# Diadaptasi dari qt-pymodbus-logger/storage/mysql_logger.py: tabel &
+# kolom dibuat/ditambah otomatis, tapi di sini kolom diberi nama sesuai
+# header CSV (mis. "Reg_40001") supaya baris di DB gampang dicocokkan
+# dengan baris di file CSV yang sama. pymysql di-import lokal di dalam
+# fungsi (bukan di top-level) supaya modbus_tool.py tetap bisa dijalankan
+# tanpa pymysql ter-install kalau fitur "Simpan ke MySQL" tidak dipakai.
+# =====================================================================
+def _nama_kolom_aman(label: str) -> str:
+    """Ubah label header (mis. 'Reg_40001-40002') jadi nama kolom SQL yang
+    aman: huruf kecil, karakter non alfanumerik jadi underscore, dan diberi
+    prefiks 'c_' bila diawali angka (MySQL tidak izinkan nama kolom diawali
+    digit tanpa backtick khusus)."""
+    aman = "".join(c if c.isalnum() else "_" for c in label.strip().lower())
+    if not aman:
+        aman = "kolom"
+    if aman[0].isdigit():
+        aman = f"c_{aman}"
+    return aman
+
+
+class MySQLDataLogger:
+    """Logger sederhana ke MySQL. Setiap operasi buka/tutup koneksi sendiri
+    (tidak menyimpan 1 koneksi persisten) supaya aman dipanggil berulang
+    dari slot Qt di thread GUI tanpa masalah state koneksi yang basi."""
+
+    def __init__(self, host, port, user, password, database, table):
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.database = database
+        self.table = table
+        self._kolom_ada = set()
+
+    def _connect(self):
+        import pymysql
+        return pymysql.connect(
+            host=self.host, port=self.port, user=self.user,
+            password=self.password, database=self.database,
+            autocommit=True, connect_timeout=5
+        )
+
+    def siapkan_tabel(self, daftar_label_kolom):
+        """Dipanggil sekali saat logging dimulai. Membuat tabel jika belum
+        ada, lalu memastikan semua kolom data (selain id/timestamp) tersedia,
+        menambah kolom baru bertipe VARCHAR(64) bila perlu. VARCHAR dipakai
+        (bukan DOUBLE) karena nilai yang dicatat bisa berupa teks hasil
+        decode macam-macam (float, signed int, atau 0/1 untuk coil)."""
+        kolom_aman = [_nama_kolom_aman(lbl) for lbl in daftar_label_kolom]
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS `{self.table}` (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    timestamp DATETIME NOT NULL
+                ) ENGINE=InnoDB;
+            """)
+            cur.execute(f"SHOW COLUMNS FROM `{self.table}`;")
+            kolom_existing = {row[0] for row in cur.fetchall()}
+            for kolom in kolom_aman:
+                if kolom not in kolom_existing:
+                    cur.execute(f"ALTER TABLE `{self.table}` ADD COLUMN `{kolom}` VARCHAR(64);")
+                    kolom_existing.add(kolom)
+            self._kolom_ada = kolom_existing
+        finally:
+            conn.close()
+        return kolom_aman
+
+    def simpan_baris(self, stempel_waktu, daftar_label_kolom, daftar_nilai):
+        """Insert 1 baris data. daftar_label_kolom & daftar_nilai harus
+        berpasangan (label dipetakan lagi ke nama kolom aman supaya
+        pemanggil tidak perlu tahu soal sanitasi nama kolom)."""
+        kolom_aman = [_nama_kolom_aman(lbl) for lbl in daftar_label_kolom]
+        nilai_str = [str(v) for v in daftar_nilai]
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            daftar_kolom_sql = ", ".join(f"`{k}`" for k in kolom_aman)
+            placeholder = ", ".join(["%s"] * (len(kolom_aman) + 1))
+            sql = f"INSERT INTO `{self.table}` (timestamp, {daftar_kolom_sql}) VALUES ({placeholder})"
+            cur.execute(sql, [stempel_waktu] + nilai_str)
+        finally:
+            conn.close()
+
+
+# =====================================================================
 # STATISTIK KESEHATAN KOMUNIKASI (untuk diagnosa bus RS-485/TCP)
 # =====================================================================
 class StatistikKomunikasi:
@@ -687,7 +775,9 @@ class ModbusApp(QMainWindow):
         self.thread_pemindai  = None
         self.thread_pooler    = None
         self.thread_logger    = None
+        self.db_logger        = None
         self.thread_tag       = None
+        self.db_logger_tag    = None
         self.memori_keterangan_user = {}
         self.nilai_sebelumnya = {}
         self.daftar_tag       = []   # daftar dict tag untuk tab "Daftar Tag"
@@ -723,6 +813,7 @@ class ModbusApp(QMainWindow):
         self.buat_tab_write_payload()
         self.buat_tab_logger()
         self.buat_tab_daftar_tag()
+        self.buat_tab_float_converter()
 
     def _buat_menu_bar(self):
         menubar = self.menuBar()
@@ -2049,11 +2140,50 @@ class ModbusApp(QMainWindow):
         grid_rotasi.addWidget(self.chk_rotasi_harian, 1, 0, 1, 2)
         grid_kiri.addWidget(grp_rotasi, 8, 0, 1, 2)
 
+        # --- Grup baru: logging paralel ke Database MySQL ---
+        grp_db = QGroupBox("Simpan ke Database (MySQL)")
+        grid_db = QGridLayout(grp_db)
+        self.chk_save_db = QCheckBox("Aktifkan simpan ke MySQL")
+        self.chk_save_db.setToolTip(
+            "Menulis baris data yang sama dengan CSV ke tabel MySQL.\n"
+            "Butuh paket 'pymysql' ter-install (lihat requirements.txt)."
+        )
+        grid_db.addWidget(self.chk_save_db, 0, 0, 1, 2)
+
+        grid_db.addWidget(QLabel("Host:"), 1, 0)
+        self.txt_db_host = QLineEdit("localhost")
+        grid_db.addWidget(self.txt_db_host, 1, 1)
+
+        grid_db.addWidget(QLabel("Port:"), 2, 0)
+        self.spin_db_port = QSpinBox()
+        self.spin_db_port.setRange(1, 65535)
+        self.spin_db_port.setValue(3306)
+        grid_db.addWidget(self.spin_db_port, 2, 1)
+
+        grid_db.addWidget(QLabel("User:"), 3, 0)
+        self.txt_db_user = QLineEdit("root")
+        grid_db.addWidget(self.txt_db_user, 3, 1)
+
+        grid_db.addWidget(QLabel("Password:"), 4, 0)
+        self.txt_db_pass = QLineEdit()
+        self.txt_db_pass.setEchoMode(QLineEdit.Password)
+        grid_db.addWidget(self.txt_db_pass, 4, 1)
+
+        grid_db.addWidget(QLabel("Database:"), 5, 0)
+        self.txt_db_name = QLineEdit("modbus")
+        grid_db.addWidget(self.txt_db_name, 5, 1)
+
+        grid_db.addWidget(QLabel("Tabel:"), 6, 0)
+        self.txt_db_table = QLineEdit("modbus_log")
+        grid_db.addWidget(self.txt_db_table, 6, 1)
+
+        grid_kiri.addWidget(grp_db, 9, 0, 1, 2)
+
         self.btn_toggle_logger = QPushButton("▶ Mulai Perekaman Data")
         self.btn_toggle_logger.clicked.connect(self.toggle_logger)
-        grid_kiri.addWidget(self.btn_toggle_logger, 9, 0, 1, 2)
-        
-        grid_kiri.setRowStretch(10, 1)
+        grid_kiri.addWidget(self.btn_toggle_logger, 10, 0, 1, 2)
+
+        grid_kiri.setRowStretch(11, 1)
 
         box_monitor = QGroupBox("Monitor Live Data")
         tata_letak_monitor = QVBoxLayout(box_monitor)
@@ -2139,6 +2269,7 @@ class ModbusApp(QMainWindow):
             return
 
         self.manajemen_interlock_tombol("log")
+        self.txt_logger_monitor.clear()
         params = {
             'slave_id': self.spin_log_slave.value(),
             'tipe_reg': self.combo_log_type.currentText(),
@@ -2169,7 +2300,33 @@ class ModbusApp(QMainWindow):
                 self.manajemen_interlock_tombol(None, status_reset=True)
                 return
 
-        self.txt_logger_monitor.clear()
+        self.db_logger = None
+        if self.chk_save_db.isChecked():
+            try:
+                header_kolom = self._buat_header_csv_logger(
+                    self.spin_log_addr.value(), self.spin_log_count.value(),
+                    self.combo_log_type.currentText(), self.combo_log_encoding.currentText()
+                )
+                self.db_logger = MySQLDataLogger(
+                    host=self.txt_db_host.text().strip(),
+                    port=self.spin_db_port.value(),
+                    user=self.txt_db_user.text().strip(),
+                    password=self.txt_db_pass.text(),
+                    database=self.txt_db_name.text().strip(),
+                    table=self.txt_db_table.text().strip() or "modbus_log",
+                )
+                self.db_logger.siapkan_tabel(header_kolom)
+                self._log_dibatasi(self.txt_logger_monitor, f"<font color='#3498db'>[Info] Terhubung ke MySQL, tabel `{self.db_logger.table}` siap.</font>")
+            except ImportError:
+                self._log_dibatasi(self.txt_logger_monitor, "<font color='red'>Gagal aktifkan MySQL: paket 'pymysql' belum ter-install (pip install pymysql).</font>")
+                self.manajemen_interlock_tombol(None, status_reset=True)
+                return
+            except Exception as e:
+                catat_kesalahan("Setup MySQL logger", e)
+                self._log_dibatasi(self.txt_logger_monitor, f"<font color='red'>Gagal terhubung ke MySQL: {str(e)}</font>")
+                self.manajemen_interlock_tombol(None, status_reset=True)
+                return
+
         self.thread_logger = ModbusPoolerLoggerThread(
             self.client_global, params, "logger",
             auto_reconnect=self.chk_auto_reconnect.isChecked()
@@ -2222,6 +2379,17 @@ class ModbusApp(QMainWindow):
             except Exception as e:
                 catat_kesalahan("Tulis baris CSV logger", e)
                 self._log_dibatasi(self.txt_logger_monitor, f"<font color='red'>Gagal simpan CSV: {str(e)}</font>")
+
+        if self.chk_save_db.isChecked() and getattr(self, 'db_logger', None):
+            try:
+                header_kolom = self._buat_header_csv_logger(
+                    self.spin_log_addr.value(), self.spin_log_count.value(),
+                    self.combo_log_type.currentText(), self.combo_log_encoding.currentText()
+                )
+                self.db_logger.simpan_baris(stempel, header_kolom, hasil_decoded_list)
+            except Exception as e:
+                catat_kesalahan("Tulis baris MySQL logger", e)
+                self._log_dibatasi(self.txt_logger_monitor, f"<font color='red'>Gagal simpan ke MySQL: {str(e)}</font>")
 
     def proses_kesalahan_thread(self, pesan_kesalahan, target_tab):
         if target_tab == "logger":
@@ -2441,7 +2609,60 @@ class ModbusApp(QMainWindow):
         self.btn_tag_toggle_polling.clicked.connect(lambda: self.eksekusi_baca_tag(tunggal=False))
         grid_kiri.addWidget(self.btn_tag_toggle_polling, 11, 0, 1, 2)
 
-        grid_kiri.setRowStretch(12, 1)
+        # --- Grup baru: logger untuk Daftar Tag (CSV & MySQL) ---
+        # Beda dari tab "Data Logger CSV": di sini 1 baris = 1 siklus baca,
+        # kolomnya adalah NAMA TAG (bukan alamat register), karena tag bisa
+        # berasal dari alamat yang tidak berurutan/campuran tipe register.
+        grp_log_tag = QGroupBox("Logger Daftar Tag")
+        grid_log_tag = QGridLayout(grp_log_tag)
+
+        self.chk_tag_save_csv = QCheckBox("Simpan ke CSV")
+        grid_log_tag.addWidget(self.chk_tag_save_csv, 0, 0, 1, 2)
+
+        grid_log_tag.addWidget(QLabel("File CSV:"), 1, 0)
+        layout_tag_csv = QHBoxLayout()
+        self.txt_tag_csv_path = QLineEdit("tag_log_terbaru.csv")
+        layout_tag_csv.addWidget(self.txt_tag_csv_path)
+        btn_browse_tag_csv = QPushButton("...")
+        btn_browse_tag_csv.setMaximumWidth(40)
+        btn_browse_tag_csv.clicked.connect(self._pilih_file_csv_tag)
+        layout_tag_csv.addWidget(btn_browse_tag_csv)
+        grid_log_tag.addLayout(layout_tag_csv, 1, 1)
+
+        self.chk_tag_save_db = QCheckBox("Simpan ke MySQL")
+        self.chk_tag_save_db.setToolTip("Butuh paket 'pymysql' ter-install (lihat requirements.txt).")
+        grid_log_tag.addWidget(self.chk_tag_save_db, 2, 0, 1, 2)
+
+        grid_log_tag.addWidget(QLabel("Host:"), 3, 0)
+        self.txt_tag_db_host = QLineEdit("localhost")
+        grid_log_tag.addWidget(self.txt_tag_db_host, 3, 1)
+
+        grid_log_tag.addWidget(QLabel("Port:"), 4, 0)
+        self.spin_tag_db_port = QSpinBox()
+        self.spin_tag_db_port.setRange(1, 65535)
+        self.spin_tag_db_port.setValue(3306)
+        grid_log_tag.addWidget(self.spin_tag_db_port, 4, 1)
+
+        grid_log_tag.addWidget(QLabel("User:"), 5, 0)
+        self.txt_tag_db_user = QLineEdit("root")
+        grid_log_tag.addWidget(self.txt_tag_db_user, 5, 1)
+
+        grid_log_tag.addWidget(QLabel("Password:"), 6, 0)
+        self.txt_tag_db_pass = QLineEdit()
+        self.txt_tag_db_pass.setEchoMode(QLineEdit.Password)
+        grid_log_tag.addWidget(self.txt_tag_db_pass, 6, 1)
+
+        grid_log_tag.addWidget(QLabel("Database:"), 7, 0)
+        self.txt_tag_db_name = QLineEdit("modbus")
+        grid_log_tag.addWidget(self.txt_tag_db_name, 7, 1)
+
+        grid_log_tag.addWidget(QLabel("Tabel:"), 8, 0)
+        self.txt_tag_db_table = QLineEdit("modbus_tag_log")
+        grid_log_tag.addWidget(self.txt_tag_db_table, 8, 1)
+
+        grid_kiri.addWidget(grp_log_tag, 12, 0, 1, 2)
+
+        grid_kiri.setRowStretch(13, 1)
 
         panel_kanan = QWidget()
         layout_kanan = QVBoxLayout(panel_kanan)
@@ -2476,6 +2697,102 @@ class ModbusApp(QMainWindow):
         splitter.setStretchFactor(1, 1)
         tata_letak.addWidget(splitter)
         self.tabs.addTab(tab, "Daftar Tag (Multi-Read)")
+
+    # ==================================================================
+    # TAB BARU: FLOAT32 <-> UINT16 CONVERTER
+    # Dipindah dari "float converter/converter.py" (class ModbusFloatConverter)
+    # menjadi tab menu tambahan di modbus_tool.py, memakai widget yang
+    # sudah diimpor di atas (tidak perlu import baru).
+    # ==================================================================
+    def buat_tab_float_converter(self):
+        tab = QWidget()
+        layout = QGridLayout(tab)
+        layout.setAlignment(Qt.AlignTop)
+
+        layout.addWidget(QLabel("<b>Register (16-bit) → Float32</b>"), 0, 0, 1, 2)
+
+        layout.addWidget(QLabel("Register 1 (dec):"), 1, 0)
+        self.txt_fc_reg1 = QLineEdit()
+        layout.addWidget(self.txt_fc_reg1, 1, 1)
+
+        layout.addWidget(QLabel("Register 2 (dec):"), 2, 0)
+        self.txt_fc_reg2 = QLineEdit()
+        layout.addWidget(self.txt_fc_reg2, 2, 1)
+
+        layout.addWidget(QLabel("Urutan Byte/Word:"), 3, 0)
+        self.combo_fc_encoding = QComboBox()
+        self.combo_fc_encoding.addItems(["ABCD", "BADC", "CDAB", "DCBA"])
+        self.combo_fc_encoding.setToolTip(
+            "ABCD = big-endian standar, DCBA = little-endian penuh,\n"
+            "BADC/CDAB = word/byte-swapped (umum pada beberapa merk PLC/sensor)."
+        )
+        layout.addWidget(self.combo_fc_encoding, 3, 1)
+
+        btn_ke_float = QPushButton("↓ Convert ke Float32")
+        btn_ke_float.clicked.connect(self._fc_convert_ke_float)
+        layout.addWidget(btn_ke_float, 4, 0, 1, 2)
+
+        self.lbl_fc_hasil_float = QLabel("Hasil: -")
+        self.lbl_fc_hasil_float.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.lbl_fc_hasil_float, 5, 0, 1, 2)
+
+        garis = QLabel("─" * 40)
+        garis.setAlignment(Qt.AlignCenter)
+        layout.addWidget(garis, 6, 0, 1, 2)
+
+        layout.addWidget(QLabel("<b>Float32 → Register (16-bit)</b>"), 7, 0, 1, 2)
+
+        layout.addWidget(QLabel("Nilai Float32:"), 8, 0)
+        self.txt_fc_float = QLineEdit()
+        layout.addWidget(self.txt_fc_float, 8, 1)
+
+        btn_ke_reg = QPushButton("↓ Convert ke Register")
+        btn_ke_reg.clicked.connect(self._fc_convert_ke_register)
+        layout.addWidget(btn_ke_reg, 9, 0, 1, 2)
+
+        self.lbl_fc_hasil_reg = QLabel("Register: -")
+        self.lbl_fc_hasil_reg.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.lbl_fc_hasil_reg, 10, 0, 1, 2)
+
+        layout.setRowStretch(11, 1)
+        self.tabs.addTab(tab, "Float Converter")
+
+    def _fc_convert_ke_float(self):
+        try:
+            r1 = int(self.txt_fc_reg1.text())
+            r2 = int(self.txt_fc_reg2.text())
+            encoding = self.combo_fc_encoding.currentText()
+
+            urutan_byte = {
+                "ABCD": [r1 >> 8, r1 & 0xFF, r2 >> 8, r2 & 0xFF],
+                "BADC": [r1 & 0xFF, r1 >> 8, r2 & 0xFF, r2 >> 8],
+                "CDAB": [r2 >> 8, r2 & 0xFF, r1 >> 8, r1 & 0xFF],
+                "DCBA": [r2 & 0xFF, r2 >> 8, r1 & 0xFF, r1 >> 8],
+            }[encoding]
+
+            nilai_float = struct.unpack(">f", bytes(urutan_byte))[0]
+            self.lbl_fc_hasil_float.setText(f"Hasil: {nilai_float:.6f}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Gagal konversi ke float:\n{e}")
+
+    def _fc_convert_ke_register(self):
+        try:
+            nilai_float = float(self.txt_fc_float.text())
+            encoding = self.combo_fc_encoding.currentText()
+            b = list(struct.pack(">f", nilai_float))
+
+            urutan_map = {
+                "ABCD": b,
+                "BADC": [b[1], b[0], b[3], b[2]],
+                "CDAB": [b[2], b[3], b[0], b[1]],
+                "DCBA": [b[3], b[2], b[1], b[0]],
+            }[encoding]
+
+            r1 = (urutan_map[0] << 8) + urutan_map[1]
+            r2 = (urutan_map[2] << 8) + urutan_map[3]
+            self.lbl_fc_hasil_reg.setText(f"Register: {r1} , {r2}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Gagal konversi ke register:\n{e}")
 
     def tambah_tag(self):
         nama = self.txt_tag_nama.text().strip()
@@ -2526,6 +2843,16 @@ class ModbusApp(QMainWindow):
         finally:
             self.tabel_tag.setUpdatesEnabled(True)
 
+    def _pilih_file_csv_tag(self):
+        jalur, _ = QFileDialog.getSaveFileName(self, "Simpan Log Tag Sebagai", "tag_log.csv", "CSV Files (*.csv)")
+        if jalur:
+            self.txt_tag_csv_path.setText(jalur)
+
+    def _tulis_header_csv_tag(self, jalur_csv):
+        header = ["Timestamp"] + [t.get('nama', '-') for t in self.daftar_tag]
+        with open(jalur_csv, 'w', newline='') as f:
+            csv.writer(f).writerow(header)
+
     def eksekusi_baca_tag(self, tunggal=False):
         if not tunggal and self.thread_tag and self.thread_tag.isRunning():
             self.thread_tag.apakah_berjalan = False
@@ -2545,6 +2872,39 @@ class ModbusApp(QMainWindow):
         if tunggal and self.thread_tag and self.thread_tag.isRunning():
             self._set_status("Masih ada pembacaan tag yang berjalan, tunggu selesai dahulu.")
             return
+
+        if self.chk_tag_save_csv.isChecked():
+            jalur_csv_tag = self.txt_tag_csv_path.text()
+            try:
+                file_baru = not os.path.exists(jalur_csv_tag) or os.path.getsize(jalur_csv_tag) == 0
+                if file_baru:
+                    self._tulis_header_csv_tag(jalur_csv_tag)
+            except Exception as e:
+                catat_kesalahan("Tulis header CSV tag", e)
+                self._log_dibatasi(self.txt_tag_monitor, f"<font color='red'>Gagal tulis header CSV: {str(e)}</font>")
+                return
+
+        self.db_logger_tag = None
+        if self.chk_tag_save_db.isChecked():
+            try:
+                header_nama_tag = [t.get('nama', '-') for t in self.daftar_tag]
+                self.db_logger_tag = MySQLDataLogger(
+                    host=self.txt_tag_db_host.text().strip(),
+                    port=self.spin_tag_db_port.value(),
+                    user=self.txt_tag_db_user.text().strip(),
+                    password=self.txt_tag_db_pass.text(),
+                    database=self.txt_tag_db_name.text().strip(),
+                    table=self.txt_tag_db_table.text().strip() or "modbus_tag_log",
+                )
+                self.db_logger_tag.siapkan_tabel(header_nama_tag)
+                self._log_dibatasi(self.txt_tag_monitor, f"<font color='#3498db'>[Info] Terhubung ke MySQL, tabel `{self.db_logger_tag.table}` siap.</font>")
+            except ImportError:
+                self._log_dibatasi(self.txt_tag_monitor, "<font color='red'>Gagal aktifkan MySQL: paket 'pymysql' belum ter-install (pip install pymysql).</font>")
+                return
+            except Exception as e:
+                catat_kesalahan("Setup MySQL logger tag", e)
+                self._log_dibatasi(self.txt_tag_monitor, f"<font color='red'>Gagal terhubung ke MySQL: {str(e)}</font>")
+                return
 
         if not tunggal:
             self.manajemen_interlock_tombol("tag")
@@ -2591,6 +2951,26 @@ class ModbusApp(QMainWindow):
         finally:
             self.tabel_tag.setUpdatesEnabled(True)
         self._log_dibatasi(self.txt_tag_monitor, f"[{stempel}] Pembacaan {len(hasil)} tag selesai.")
+
+        if hasil and (self.chk_tag_save_csv.isChecked() or self.chk_tag_save_db.isChecked()):
+            stempel_lengkap = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            nama_tag_list = [item_hasil['nama'] for item_hasil in hasil]
+            nilai_akhir_list = [item_hasil['nilai_akhir'] for item_hasil in hasil]
+
+            if self.chk_tag_save_csv.isChecked():
+                try:
+                    with open(self.txt_tag_csv_path.text(), mode='a', newline='') as f:
+                        csv.writer(f).writerow([stempel_lengkap] + nilai_akhir_list)
+                except Exception as e:
+                    catat_kesalahan("Tulis baris CSV tag", e)
+                    self._log_dibatasi(self.txt_tag_monitor, f"<font color='red'>Gagal simpan CSV: {str(e)}</font>")
+
+            if self.chk_tag_save_db.isChecked() and getattr(self, 'db_logger_tag', None):
+                try:
+                    self.db_logger_tag.simpan_baris(stempel_lengkap, nama_tag_list, nilai_akhir_list)
+                except Exception as e:
+                    catat_kesalahan("Tulis baris MySQL tag", e)
+                    self._log_dibatasi(self.txt_tag_monitor, f"<font color='red'>Gagal simpan ke MySQL: {str(e)}</font>")
 
 
     def matikan_semua_thread_aktif(self):
