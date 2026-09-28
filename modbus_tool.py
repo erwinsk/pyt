@@ -781,6 +781,9 @@ class ModbusApp(QMainWindow):
         self.memori_keterangan_user = {}
         self.nilai_sebelumnya = {}
         self.daftar_tag       = []   # daftar dict tag untuk tab "Daftar Tag"
+        self._indeks_tag_diedit = None   # baris yang sedang dimuat untuk diedit (None = mode tambah baru)
+        self.daftar_perintah_write = []   # daftar dict perintah untuk tab "Daftar Perintah (Write)"
+        self._indeks_perintah_diedit = None
         self.mode_gelap       = False
         self._rotasi_csv_hitungan = 0
         self._tanggal_csv_aktif = None
@@ -811,6 +814,7 @@ class ModbusApp(QMainWindow):
         self.buat_tab_register_scanner()
         self.buat_tab_reader_pooler()
         self.buat_tab_write_payload()
+        self.buat_tab_daftar_perintah_write()
         self.buat_tab_logger()
         self.buat_tab_daftar_tag()
         self.buat_tab_float_converter()
@@ -1929,11 +1933,28 @@ class ModbusApp(QMainWindow):
         if not self.client_global or not client_terhubung(self.client_global):
             QMessageBox.critical(self, "Error", "Master Modbus belum terhubung!")
             return
+        self._eksekusi_perintah_write_generik(
+            tipe_fungsi=self.combo_write_type.currentText(),
+            alamat_tujuan=self.spin_write_addr.value(),
+            target_device_id=self.spin_write_slave.value(),
+            input_user=self.txt_write_payload.text(),
+            encoding=self.combo_write_encoding.currentText(),
+            log_widget=self.txt_write_log,
+            minta_konfirmasi=not self.chk_skip_confirm_write.isChecked(),
+            lakukan_verifikasi=self.chk_verify_write.isChecked(),
+        )
 
-        tipe_fungsi = self.combo_write_type.currentText()
-        alamat_tujuan = self.spin_write_addr.value()
-        target_device_id = self.spin_write_slave.value()
-        input_user = self.txt_write_payload.text()
+    def _eksekusi_perintah_write_generik(self, tipe_fungsi, alamat_tujuan, target_device_id,
+                                          input_user, encoding, log_widget,
+                                          minta_konfirmasi=True, lakukan_verifikasi=True):
+        """Eksekusi 1 perintah tulis Modbus. Dipisah dari eksekusi_penulisan_modbus
+        supaya bisa dipakai bersama oleh tab 'Write Register / Coil' (form manual,
+        sekali pakai) dan tab 'Daftar Perintah (Write)' (perintah tersimpan yang
+        bisa dipanggil ulang kapan saja)."""
+        if not self.client_global or not client_terhubung(self.client_global):
+            QMessageBox.critical(self, "Error", "Master Modbus belum terhubung!")
+            return
+
         waktu_skrg = datetime.now().strftime("%H:%M:%S")
         register_final = []
         val_bool = False
@@ -1949,24 +1970,24 @@ class ModbusApp(QMainWindow):
                 and_mask = int(bagian[0], 0)
                 or_mask = int(bagian[1], 0)
             except ValueError as e:
-                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='red'>Error Parsing Mask: {str(e)}</font>")
+                self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='red'>Error Parsing Mask: {str(e)}</font>")
                 return
         elif "Multiple Coils" not in tipe_fungsi:
             try:
                 if "Multiple" in tipe_fungsi and "," in input_user:
                     elemen = input_user.split(",")
                     for e in elemen:
-                        register_final.extend(enkode_nilai_ke_register(e.strip(), self.combo_write_encoding.currentText()))
+                        register_final.extend(enkode_nilai_ke_register(e.strip(), encoding))
                 else:
-                    register_final = enkode_nilai_ke_register(input_user, self.combo_write_encoding.currentText())
+                    register_final = enkode_nilai_ke_register(input_user, encoding)
             except ValueError as e:
-                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='red'>Error Parsing Data: {str(e)}</font>")
+                self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='red'>Error Parsing Data: {str(e)}</font>")
                 return
 
         # Fitur keamanan: minta konfirmasi sebelum benar-benar menulis ke
         # perangkat, karena write yang salah alamat/nilai bisa berdampak ke
         # proses/perangkat industrial yang sedang berjalan.
-        if not self.chk_skip_confirm_write.isChecked():
+        if minta_konfirmasi:
             jawaban = QMessageBox.question(
                 self, "Konfirmasi Penulisan",
                 f"Anda akan menulis ke:\n\n"
@@ -1978,7 +1999,7 @@ class ModbusApp(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if jawaban != QMessageBox.Yes:
-                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] Penulisan dibatalkan oleh pengguna.")
+                self._log_dibatasi(log_widget, f"[{waktu_skrg}] Penulisan dibatalkan oleh pengguna.")
                 return
 
         self.manajemen_interlock_tombol("write")
@@ -2012,7 +2033,7 @@ class ModbusApp(QMainWindow):
 
             if res and res.isError():
                 statistik_global.catat_gagal()
-                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='red'>Gagal! {terjemahkan_respon_modbus(res)}</font>")
+                self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='red'>Gagal! {terjemahkan_respon_modbus(res)}</font>")
             elif res:
                 statistik_global.catat_sukses()
                 # Tangkap nilai data yang dieksekusi berdasarkan jenis perintah
@@ -2029,22 +2050,24 @@ class ModbusApp(QMainWindow):
                     data_kirim = str(register_final)
                 
                 # Tampilkan data_kirim pada log interface
-                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='green'>Transmisi Sukses → Addr: {alamat_tujuan} | ID: {target_device_id} | Data: {data_kirim}</font>")
+                self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='green'>Transmisi Sukses → Addr: {alamat_tujuan} | ID: {target_device_id} | Data: {data_kirim}</font>")
 
                 # Fitur: baca ulang untuk verifikasi nilai benar-benar tersimpan
-                if self.chk_verify_write.isChecked() and "Mask Write" not in tipe_fungsi:
-                    self._verifikasi_baca_ulang(tipe_fungsi, alamat_tujuan, target_device_id, register_final, val_bool, input_user)
+                if lakukan_verifikasi and "Mask Write" not in tipe_fungsi:
+                    self._verifikasi_baca_ulang(tipe_fungsi, alamat_tujuan, target_device_id, register_final, val_bool, input_user, log_widget)
         except Exception as e:
             catat_kesalahan("Eksekusi tulis Modbus", e)
-            self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='red'>Kesalahan Hardware: {str(e)}</font>")
+            self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='red'>Kesalahan Hardware: {str(e)}</font>")
         finally:
             kunci_komunikasi.unlock()
             self.manajemen_interlock_tombol(None, status_reset=True)
 
-    def _verifikasi_baca_ulang(self, tipe_fungsi, alamat, device_id, register_final, val_bool, input_user):
+    def _verifikasi_baca_ulang(self, tipe_fungsi, alamat, device_id, register_final, val_bool, input_user, log_widget=None):
         """Baca kembali alamat yang baru saja ditulis untuk memastikan
         nilainya benar-benar tersimpan di perangkat, bukan hanya berasumsi
         sukses karena tidak ada exception."""
+        if log_widget is None:
+            log_widget = self.txt_write_log
         waktu_skrg = datetime.now().strftime("%H:%M:%S")
         try:
             if "Coil" in tipe_fungsi:
@@ -2052,23 +2075,240 @@ class ModbusApp(QMainWindow):
                 res = baca_register_modbus(self.client_global, "Coil", alamat, jumlah, device_id)
                 if res and not res.isError():
                     nilai_terbaca = res.bits[:jumlah]
-                    self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] Verifikasi baca ulang Coil: {nilai_terbaca}")
+                    self._log_dibatasi(log_widget, f"[{waktu_skrg}] Verifikasi baca ulang Coil: {nilai_terbaca}")
                 else:
-                    self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {terjemahkan_respon_modbus(res)}</font>")
+                    self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {terjemahkan_respon_modbus(res)}</font>")
             else:
                 jumlah = max(1, len(register_final))
                 res = baca_register_modbus(self.client_global, "Holding", alamat, jumlah, device_id)
                 if res and not res.isError():
                     if list(res.registers[:jumlah]) == register_final:
-                        self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='green'>Verifikasi OK: nilai di perangkat cocok ({list(res.registers[:jumlah])}).</font>")
+                        self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='green'>Verifikasi OK: nilai di perangkat cocok ({list(res.registers[:jumlah])}).</font>")
                     else:
-                        self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='orange'>Verifikasi TIDAK cocok! Diharapkan {register_final}, terbaca {list(res.registers[:jumlah])}.</font>")
+                        self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='orange'>Verifikasi TIDAK cocok! Diharapkan {register_final}, terbaca {list(res.registers[:jumlah])}.</font>")
                 else:
-                    self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {terjemahkan_respon_modbus(res)}</font>")
+                    self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {terjemahkan_respon_modbus(res)}</font>")
         except Exception as e:
             catat_kesalahan("Verifikasi baca ulang write", e)
-            self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {str(e)}</font>")
+            self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='orange'>Verifikasi gagal: {str(e)}</font>")
 
+
+    # ==================================================================
+    # TAB BARU: DAFTAR PERINTAH (WRITE CUSTOM)
+    # Sama polanya dengan tab "Daftar Tag (Multi-Read)", tapi untuk menyimpan
+    # perintah TULIS custom (bukan baca) yang bisa dipanggil satu-per-satu
+    # kapan saja tanpa harus mengisi ulang form di tab "Write Register / Coil".
+    # ==================================================================
+    def buat_tab_daftar_perintah_write(self):
+        tab = QWidget()
+        tata_letak = QHBoxLayout(tab)
+
+        box_kontrol = QGroupBox("Definisi Perintah")
+        box_kontrol.setMaximumWidth(320)
+        grid_kiri = QGridLayout(box_kontrol)
+
+        grid_kiri.addWidget(QLabel("Nama Perintah:"), 0, 0)
+        self.txt_perintah_nama = QLineEdit("Perintah_1")
+        grid_kiri.addWidget(self.txt_perintah_nama, 0, 1)
+
+        grid_kiri.addWidget(QLabel("Slave ID:"), 1, 0)
+        self.spin_perintah_slave = QSpinBox()
+        self.spin_perintah_slave.setRange(0, 255)
+        self.spin_perintah_slave.setValue(1)
+        grid_kiri.addWidget(self.spin_perintah_slave, 1, 1)
+
+        grid_kiri.addWidget(QLabel("Fungsi Tulis:"), 2, 0)
+        self.combo_perintah_type = QComboBox()
+        self.combo_perintah_type.addItems(["Write Single Coil (FC 05)", "Write Single Register (FC 06)",
+                                            "Write Multiple Coils (FC 15)", "Write Multiple Registers (FC 16)",
+                                            "Mask Write Register (FC 22)"])
+        grid_kiri.addWidget(self.combo_perintah_type, 2, 1)
+
+        grid_kiri.addWidget(QLabel("Alamat Tujuan:"), 3, 0)
+        self.spin_perintah_addr = QSpinBox()
+        self.spin_perintah_addr.setRange(0, 65535)
+        grid_kiri.addWidget(self.spin_perintah_addr, 3, 1)
+
+        grid_kiri.addWidget(QLabel("Format Data:"), 4, 0)
+        self.combo_perintah_encoding = QComboBox()
+        self.combo_perintah_encoding.addItems(DAFTAR_ENCODING)
+        self.combo_perintah_encoding.setToolTip("Diabaikan untuk Coil dan Mask Write Register.")
+        grid_kiri.addWidget(self.combo_perintah_encoding, 4, 1)
+
+        grid_kiri.addWidget(QLabel("Nilai:"), 5, 0)
+        self.txt_perintah_nilai = QLineEdit("0")
+        self.txt_perintah_nilai.setToolTip(
+            "Coil: 1/0/true/false/on/off.\n"
+            "Register tunggal: satu angka.\n"
+            "Multiple Registers/Coils: pisahkan dengan koma, mis. 1,2,3.\n"
+            "Mask Write Register: dua angka dipisah koma 'AND_mask,OR_mask' (boleh desimal atau 0xHEX)."
+        )
+        grid_kiri.addWidget(self.txt_perintah_nilai, 5, 1)
+
+        self.chk_perintah_verify = QCheckBox("Baca ulang untuk verifikasi")
+        self.chk_perintah_verify.setChecked(True)
+        grid_kiri.addWidget(self.chk_perintah_verify, 6, 0, 1, 2)
+
+        self.chk_perintah_skip_confirm = QCheckBox("Lewati dialog konfirmasi saat dijalankan")
+        self.chk_perintah_skip_confirm.setToolTip("Kalau dicentang, klik 'Jalankan' di tabel langsung eksekusi tanpa dialog konfirmasi. Gunakan dengan hati-hati.")
+        grid_kiri.addWidget(self.chk_perintah_skip_confirm, 7, 0, 1, 2)
+
+        btn_tambah_perintah = QPushButton("+ Simpan Perintah Baru")
+        btn_tambah_perintah.clicked.connect(self.tambah_perintah_write)
+        grid_kiri.addWidget(btn_tambah_perintah, 8, 0, 1, 2)
+
+        self.btn_update_perintah = QPushButton("🔄 Update Perintah Terpilih")
+        self.btn_update_perintah.setToolTip("Klik dua kali salah satu baris di tabel kanan untuk memuat datanya ke form ini, ubah seperlunya, lalu klik tombol ini.")
+        self.btn_update_perintah.clicked.connect(self.update_perintah_terpilih)
+        grid_kiri.addWidget(self.btn_update_perintah, 9, 0, 1, 2)
+
+        btn_hapus_perintah = QPushButton("Hapus Perintah Terpilih")
+        btn_hapus_perintah.clicked.connect(self.hapus_perintah_terpilih)
+        grid_kiri.addWidget(btn_hapus_perintah, 10, 0, 1, 2)
+
+        grid_kiri.setRowStretch(11, 1)
+
+        panel_kanan = QWidget()
+        layout_kanan = QVBoxLayout(panel_kanan)
+        layout_kanan.setContentsMargins(0, 0, 0, 0)
+
+        self.tabel_perintah = QTableWidget(0, 7)
+        self.tabel_perintah.setHorizontalHeaderLabels(
+            ["Nama", "Slave ID", "Fungsi", "Alamat", "Format", "Nilai", "Aksi"]
+        )
+        self.tabel_perintah.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.tabel_perintah.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tabel_perintah.cellDoubleClicked.connect(self._muat_perintah_ke_form)
+        layout_kanan.addWidget(self.tabel_perintah, 2)
+
+        box_log_perintah = QGroupBox("Terminal Validasi")
+        layout_log_perintah = QVBoxLayout(box_log_perintah)
+        self.txt_perintah_log = QTextEdit()
+        self.txt_perintah_log.setReadOnly(True)
+        layout_log_perintah.addWidget(self.txt_perintah_log)
+        layout_kanan.addWidget(box_log_perintah, 1)
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(box_kontrol)
+        splitter.addWidget(panel_kanan)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        tata_letak.addWidget(splitter)
+        self.tabs.addTab(tab, "Daftar Perintah (Write)")
+
+    def _kumpulkan_form_perintah(self):
+        return {
+            'nama': self.txt_perintah_nama.text().strip(),
+            'slave_id': self.spin_perintah_slave.value(),
+            'tipe_fungsi': self.combo_perintah_type.currentText(),
+            'alamat': self.spin_perintah_addr.value(),
+            'encoding': self.combo_perintah_encoding.currentText(),
+            'nilai': self.txt_perintah_nilai.text(),
+            'verifikasi': self.chk_perintah_verify.isChecked(),
+            'lewati_konfirmasi': self.chk_perintah_skip_confirm.isChecked(),
+        }
+
+    def tambah_perintah_write(self):
+        data = self._kumpulkan_form_perintah()
+        if not data['nama']:
+            QMessageBox.warning(self, "Nama Kosong", "Nama perintah tidak boleh kosong.")
+            return
+        self.daftar_perintah_write.append(data)
+        self._indeks_perintah_diedit = None
+        self._render_ulang_tabel_perintah()
+
+    def update_perintah_terpilih(self):
+        idx = self._indeks_perintah_diedit
+        if idx is None or not (0 <= idx < len(self.daftar_perintah_write)):
+            QMessageBox.information(
+                self, "Belum Ada Perintah Dimuat",
+                "Klik dua kali salah satu baris perintah di tabel kanan dulu untuk "
+                "memuat datanya ke form, baru ubah nilainya dan klik tombol ini."
+            )
+            return
+        data = self._kumpulkan_form_perintah()
+        if not data['nama']:
+            QMessageBox.warning(self, "Nama Kosong", "Nama perintah tidak boleh kosong.")
+            return
+        self.daftar_perintah_write[idx] = data
+        self._render_ulang_tabel_perintah()
+        self._indeks_perintah_diedit = None
+        self._set_status(f"Perintah '{data['nama']}' berhasil diupdate.")
+
+    def hapus_perintah_terpilih(self):
+        baris_terpilih = sorted({idx.row() for idx in self.tabel_perintah.selectedIndexes()}, reverse=True)
+        if not baris_terpilih:
+            QMessageBox.information(self, "Tidak Ada Pilihan", "Pilih dulu satu atau lebih baris perintah yang ingin dihapus.")
+            return
+        for baris in baris_terpilih:
+            if 0 <= baris < len(self.daftar_perintah_write):
+                del self.daftar_perintah_write[baris]
+        self._indeks_perintah_diedit = None
+        self._render_ulang_tabel_perintah()
+
+    def _render_ulang_tabel_perintah(self):
+        self.tabel_perintah.setUpdatesEnabled(False)
+        try:
+            self.tabel_perintah.setRowCount(0)
+            for perintah in self.daftar_perintah_write:
+                baris = self.tabel_perintah.rowCount()
+                self.tabel_perintah.insertRow(baris)
+                nilai_kolom = [
+                    perintah.get('nama', ''), str(perintah.get('slave_id', '')),
+                    perintah.get('tipe_fungsi', ''), str(perintah.get('alamat', '')),
+                    perintah.get('encoding', ''), str(perintah.get('nilai', '')),
+                ]
+                for kolom, teks in enumerate(nilai_kolom):
+                    item = QTableWidgetItem(teks)
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.tabel_perintah.setItem(baris, kolom, item)
+
+                # `r=baris` WAJIB (lihat catatan closure di _render_ulang_tabel_tag).
+                btn_jalankan = QPushButton("▶ Jalankan")
+                btn_jalankan.setToolTip(f"Jalankan perintah '{perintah.get('nama','')}' ini sekarang.")
+                btn_jalankan.clicked.connect(lambda checked=False, r=baris: self.jalankan_perintah_tunggal(r))
+                self.tabel_perintah.setCellWidget(baris, 6, btn_jalankan)
+            self.tabel_perintah.resizeColumnsToContents()
+        finally:
+            self.tabel_perintah.setUpdatesEnabled(True)
+
+    def _muat_perintah_ke_form(self, baris, kolom=0):
+        if not (0 <= baris < len(self.daftar_perintah_write)):
+            return
+        p = self.daftar_perintah_write[baris]
+        self.txt_perintah_nama.setText(p.get('nama', ''))
+        self.spin_perintah_slave.setValue(int(p.get('slave_id', 1)))
+        idx_tipe = self.combo_perintah_type.findText(p.get('tipe_fungsi', ''))
+        if idx_tipe >= 0:
+            self.combo_perintah_type.setCurrentIndex(idx_tipe)
+        self.spin_perintah_addr.setValue(int(p.get('alamat', 0)))
+        idx_enc = self.combo_perintah_encoding.findText(p.get('encoding', ''))
+        if idx_enc >= 0:
+            self.combo_perintah_encoding.setCurrentIndex(idx_enc)
+        self.txt_perintah_nilai.setText(str(p.get('nilai', '')))
+        self.chk_perintah_verify.setChecked(bool(p.get('verifikasi', True)))
+        self.chk_perintah_skip_confirm.setChecked(bool(p.get('lewati_konfirmasi', False)))
+
+        self._indeks_perintah_diedit = baris
+        self._set_status(f"Perintah '{p.get('nama','')}' (baris {baris+1}) dimuat ke form — ubah lalu klik 'Update Perintah Terpilih'.")
+
+    def jalankan_perintah_tunggal(self, baris):
+        if not (0 <= baris < len(self.daftar_perintah_write)):
+            return
+        if not self.client_global or not client_terhubung(self.client_global):
+            QMessageBox.critical(self, "Error", "Master Modbus belum terhubung!")
+            return
+        p = self.daftar_perintah_write[baris]
+        self._eksekusi_perintah_write_generik(
+            tipe_fungsi=p.get('tipe_fungsi', ''),
+            alamat_tujuan=int(p.get('alamat', 0)),
+            target_device_id=int(p.get('slave_id', 1)),
+            input_user=str(p.get('nilai', '')),
+            encoding=p.get('encoding', DAFTAR_ENCODING[0]),
+            log_widget=self.txt_perintah_log,
+            minta_konfirmasi=not p.get('lewati_konfirmasi', False),
+            lakukan_verifikasi=p.get('verifikasi', True),
+        )
 
     # ==================================================================
     # TAB 5: AUTOMATED LOGGER KE CSV
@@ -2591,23 +2831,28 @@ class ModbusApp(QMainWindow):
         btn_tambah_tag.clicked.connect(self.tambah_tag)
         grid_kiri.addWidget(btn_tambah_tag, 7, 0, 1, 2)
 
+        self.btn_update_tag = QPushButton("🔄 Update Tag Terpilih")
+        self.btn_update_tag.setToolTip("Klik dua kali salah satu baris di tabel kanan untuk memuat datanya ke form ini, ubah seperlunya, lalu klik tombol ini.")
+        self.btn_update_tag.clicked.connect(self.update_tag_terpilih)
+        grid_kiri.addWidget(self.btn_update_tag, 8, 0, 1, 2)
+
         btn_hapus_tag = QPushButton("Hapus Tag Terpilih")
         btn_hapus_tag.clicked.connect(self.hapus_tag_terpilih)
-        grid_kiri.addWidget(btn_hapus_tag, 8, 0, 1, 2)
+        grid_kiri.addWidget(btn_hapus_tag, 9, 0, 1, 2)
 
-        grid_kiri.addWidget(QLabel("Interval Polling (s):"), 9, 0)
+        grid_kiri.addWidget(QLabel("Interval Polling (s):"), 10, 0)
         self.spin_tag_interval = QDoubleSpinBox()
         self.spin_tag_interval.setRange(0.2, 3600.0)
         self.spin_tag_interval.setValue(2.0)
-        grid_kiri.addWidget(self.spin_tag_interval, 9, 1)
+        grid_kiri.addWidget(self.spin_tag_interval, 10, 1)
 
         self.btn_tag_baca_semua = QPushButton("Baca Semua Tag (Sekali)")
         self.btn_tag_baca_semua.clicked.connect(lambda: self.eksekusi_baca_tag(tunggal=True))
-        grid_kiri.addWidget(self.btn_tag_baca_semua, 10, 0, 1, 2)
+        grid_kiri.addWidget(self.btn_tag_baca_semua, 11, 0, 1, 2)
 
         self.btn_tag_toggle_polling = QPushButton("▶ Mulai Polling Semua Tag")
         self.btn_tag_toggle_polling.clicked.connect(lambda: self.eksekusi_baca_tag(tunggal=False))
-        grid_kiri.addWidget(self.btn_tag_toggle_polling, 11, 0, 1, 2)
+        grid_kiri.addWidget(self.btn_tag_toggle_polling, 12, 0, 1, 2)
 
         # --- Grup baru: logger untuk Daftar Tag (CSV & MySQL) ---
         # Beda dari tab "Data Logger CSV": di sini 1 baris = 1 siklus baca,
@@ -2660,17 +2905,17 @@ class ModbusApp(QMainWindow):
         self.txt_tag_db_table = QLineEdit("modbus_tag_log")
         grid_log_tag.addWidget(self.txt_tag_db_table, 8, 1)
 
-        grid_kiri.addWidget(grp_log_tag, 12, 0, 1, 2)
+        grid_kiri.addWidget(grp_log_tag, 13, 0, 1, 2)
 
-        grid_kiri.setRowStretch(13, 1)
+        grid_kiri.setRowStretch(14, 1)
 
         panel_kanan = QWidget()
         layout_kanan = QVBoxLayout(panel_kanan)
         layout_kanan.setContentsMargins(0, 0, 0, 0)
 
-        self.tabel_tag = QTableWidget(0, 9)
+        self.tabel_tag = QTableWidget(0, 10)
         self.tabel_tag.setHorizontalHeaderLabels(
-            ["Nama", "Slave ID", "Tipe", "Alamat", "Encoding", "Skala", "Offset", "Nilai Mentah", "Nilai Akhir"]
+            ["Nama", "Slave ID", "Tipe", "Alamat", "Encoding", "Skala", "Offset", "Nilai Mentah", "Nilai Akhir", "Aksi"]
         )
         # FIX PERFORMA: mode ResizeToContents menghitung ulang lebar semua
         # kolom setiap kali ISI SEL berubah - karena tabel ini diperbarui
@@ -2681,6 +2926,7 @@ class ModbusApp(QMainWindow):
         # pembaruan nilai berikutnya tidak memicu kalkulasi ulang lebar kolom.
         self.tabel_tag.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.tabel_tag.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tabel_tag.cellDoubleClicked.connect(self._muat_tag_ke_form)
         layout_kanan.addWidget(self.tabel_tag, 2)
 
         box_monitor_tag = QGroupBox("Monitor / Log Tag")
@@ -2809,6 +3055,7 @@ class ModbusApp(QMainWindow):
             'offset': self.spin_tag_offset.value(),
         }
         self.daftar_tag.append(tag)
+        self._indeks_tag_diedit = None
         self._render_ulang_tabel_tag()
 
     def hapus_tag_terpilih(self):
@@ -2819,6 +3066,7 @@ class ModbusApp(QMainWindow):
         for baris in baris_terpilih:
             if 0 <= baris < len(self.daftar_tag):
                 del self.daftar_tag[baris]
+        self._indeks_tag_diedit = None  # indeks lama bisa jadi sudah tidak valid/bergeser
         self._render_ulang_tabel_tag()
 
     def _render_ulang_tabel_tag(self):
@@ -2837,11 +3085,69 @@ class ModbusApp(QMainWindow):
                     item = QTableWidgetItem(teks)
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                     self.tabel_tag.setItem(baris, kolom, item)
+
+                # Kolom "Aksi": tombol baca 1 tag ini saja, tanpa menyentuh tag
+                # lain atau menghentikan polling semua tag. `r=baris` di lambda
+                # WAJIB (bukan langsung pakai `baris`) supaya tiap tombol
+                # menyimpan nomor barisnya sendiri, bukan nilai `baris` terakhir
+                # dari loop (classic late-binding closure bug di Python).
+                btn_baca_satu = QPushButton("Baca")
+                btn_baca_satu.setToolTip(f"Baca tag '{tag.get('nama','')}' ini saja, sekarang juga.")
+                btn_baca_satu.clicked.connect(lambda checked=False, r=baris: self.baca_tag_tunggal(r))
+                self.tabel_tag.setCellWidget(baris, 9, btn_baca_satu)
             # Pas-kan lebar kolom SEKALI di sini (bukan otomatis terus-menerus
             # lewat ResizeToContents) - lihat catatan performa di atas.
             self.tabel_tag.resizeColumnsToContents()
         finally:
             self.tabel_tag.setUpdatesEnabled(True)
+
+    def _muat_tag_ke_form(self, baris, kolom=0):
+        """Dipanggil saat baris tabel di-klik-dua-kali: memuat data tag baris
+        tsb ke form Definisi Tag supaya bisa diedit, lalu diklik 'Update Tag
+        Terpilih' untuk menyimpan perubahannya (Fitur edit/update tag)."""
+        if not (0 <= baris < len(self.daftar_tag)):
+            return
+        tag = self.daftar_tag[baris]
+        self.txt_tag_nama.setText(tag.get('nama', ''))
+        self.spin_tag_slave.setValue(int(tag.get('slave_id', 1)))
+        idx_tipe = self.combo_tag_type.findText(tag.get('tipe_reg', 'Holding'))
+        if idx_tipe >= 0:
+            self.combo_tag_type.setCurrentIndex(idx_tipe)
+        self.spin_tag_addr.setValue(int(tag.get('alamat', 0)))
+        idx_enc = self.combo_tag_encoding.findText(tag.get('encoding', ''))
+        if idx_enc >= 0:
+            self.combo_tag_encoding.setCurrentIndex(idx_enc)
+        self.spin_tag_skala.setValue(float(tag.get('skala', 1.0)))
+        self.spin_tag_offset.setValue(float(tag.get('offset', 0.0)))
+
+        self._indeks_tag_diedit = baris
+        self._set_status(f"Tag '{tag.get('nama','')}' (baris {baris+1}) dimuat ke form — ubah lalu klik 'Update Tag Terpilih'.")
+
+    def update_tag_terpilih(self):
+        idx = getattr(self, '_indeks_tag_diedit', None)
+        if idx is None or not (0 <= idx < len(self.daftar_tag)):
+            QMessageBox.information(
+                self, "Belum Ada Tag Dimuat",
+                "Klik dua kali salah satu baris tag di tabel kanan dulu untuk "
+                "memuat datanya ke form, baru ubah nilainya dan klik tombol ini."
+            )
+            return
+        nama = self.txt_tag_nama.text().strip()
+        if not nama:
+            QMessageBox.warning(self, "Nama Kosong", "Nama tag tidak boleh kosong.")
+            return
+        self.daftar_tag[idx] = {
+            'nama': nama,
+            'slave_id': self.spin_tag_slave.value(),
+            'tipe_reg': self.combo_tag_type.currentText(),
+            'alamat': self.spin_tag_addr.value(),
+            'encoding': self.combo_tag_encoding.currentText(),
+            'skala': self.spin_tag_skala.value(),
+            'offset': self.spin_tag_offset.value(),
+        }
+        self._render_ulang_tabel_tag()
+        self._indeks_tag_diedit = None
+        self._set_status(f"Tag '{nama}' berhasil diupdate.")
 
     def _pilih_file_csv_tag(self):
         jalur, _ = QFileDialog.getSaveFileName(self, "Simpan Log Tag Sebagai", "tag_log.csv", "CSV Files (*.csv)")
@@ -2925,6 +3231,27 @@ class ModbusApp(QMainWindow):
             self.thread_tag.finished.connect(lambda: self.manajemen_interlock_tombol(None, status_reset=True))
         self.thread_tag.start()
 
+    def _perbarui_baris_tabel_tag(self, baris, item_hasil):
+        """Update 1 baris tabel (kolom Nilai Mentah & Nilai Akhir) untuk 1 hasil
+        pembacaan tag. Dipisah dari proses_hasil_tag_thread supaya bisa dipakai
+        ulang oleh baca_tag_tunggal (baca 1 tag saja lewat tombol per-baris)."""
+        if baris >= self.tabel_tag.rowCount():
+            return
+        item_mentah = self.tabel_tag.item(baris, 7)
+        if item_mentah is None:
+            item_mentah = QTableWidgetItem()
+            item_mentah.setFlags(item_mentah.flags() & ~Qt.ItemIsEditable)
+            self.tabel_tag.setItem(baris, 7, item_mentah)
+        item_mentah.setText(item_hasil['nilai_mentah'])
+
+        item_akhir = self.tabel_tag.item(baris, 8)
+        if item_akhir is None:
+            item_akhir = QTableWidgetItem()
+            item_akhir.setFlags(item_akhir.flags() & ~Qt.ItemIsEditable)
+            self.tabel_tag.setItem(baris, 8, item_akhir)
+        item_akhir.setText(item_hasil['nilai_akhir'])
+        item_akhir.setBackground(QColor(WARNA_GAGAL) if item_hasil['status'] == 'ERROR' else QColor(Qt.transparent))
+
     def proses_hasil_tag_thread(self, hasil):
         stempel = datetime.now().strftime("%H:%M:%S")
         # FIX PERFORMA: reuse item sel yang sudah ada (setText) alih-alih
@@ -2932,22 +3259,7 @@ class ModbusApp(QMainWindow):
         self.tabel_tag.setUpdatesEnabled(False)
         try:
             for baris, item_hasil in enumerate(hasil):
-                if baris >= self.tabel_tag.rowCount():
-                    break
-                item_mentah = self.tabel_tag.item(baris, 7)
-                if item_mentah is None:
-                    item_mentah = QTableWidgetItem()
-                    item_mentah.setFlags(item_mentah.flags() & ~Qt.ItemIsEditable)
-                    self.tabel_tag.setItem(baris, 7, item_mentah)
-                item_mentah.setText(item_hasil['nilai_mentah'])
-
-                item_akhir = self.tabel_tag.item(baris, 8)
-                if item_akhir is None:
-                    item_akhir = QTableWidgetItem()
-                    item_akhir.setFlags(item_akhir.flags() & ~Qt.ItemIsEditable)
-                    self.tabel_tag.setItem(baris, 8, item_akhir)
-                item_akhir.setText(item_hasil['nilai_akhir'])
-                item_akhir.setBackground(QColor(WARNA_GAGAL) if item_hasil['status'] == 'ERROR' else QColor(Qt.transparent))
+                self._perbarui_baris_tabel_tag(baris, item_hasil)
         finally:
             self.tabel_tag.setUpdatesEnabled(True)
         self._log_dibatasi(self.txt_tag_monitor, f"[{stempel}] Pembacaan {len(hasil)} tag selesai.")
@@ -2971,6 +3283,66 @@ class ModbusApp(QMainWindow):
                 except Exception as e:
                     catat_kesalahan("Tulis baris MySQL tag", e)
                     self._log_dibatasi(self.txt_tag_monitor, f"<font color='red'>Gagal simpan ke MySQL: {str(e)}</font>")
+
+    def baca_tag_tunggal(self, baris):
+        """Baca HANYA 1 tag (baris yang diklik), tanpa memengaruhi/menghentikan
+        polling semua tag yang mungkin sedang berjalan. Dijalankan langsung
+        di thread GUI (bukan QThread terpisah) karena ini cuma 1 transaksi
+        Modbus singkat - pola yang sama dipakai tombol Transmisikan Data di
+        tab Write. Catatan: hasil baca 1 tag ini TIDAK ditulis ke logger
+        CSV/MySQL (yang formatnya 1 baris = semua tag sekaligus); ini murni
+        untuk cek cepat nilai 1 tag tanpa menunggu siklus penuh."""
+        if not (0 <= baris < len(self.daftar_tag)):
+            return
+        if not self.client_global or not client_terhubung(self.client_global):
+            self._set_status("Error: Koneksi utama belum aktif.")
+            return
+        if self.thread_tag and self.thread_tag.isRunning():
+            self._set_status("Polling semua tag sedang berjalan, tunggu siklus berikutnya selesai dulu.")
+            return
+
+        tag = self.daftar_tag[baris]
+        nama = tag.get('nama', '-')
+        slave_id = int(tag.get('slave_id', 1))
+        tipe_reg = tag.get('tipe_reg', 'Holding')
+        alamat = int(tag.get('alamat', 0))
+        encoding = tag.get('encoding', 'Mentah (16-bit UINT)')
+        skala = float(tag.get('skala', 1.0))
+        offset = float(tag.get('offset', 0.0))
+        jumlah = dapatkan_jumlah_word(encoding) if tipe_reg in ('Holding', 'Input') else 1
+
+        kunci_komunikasi.lock()
+        try:
+            res = baca_register_modbus(self.client_global, tipe_reg, alamat, jumlah, slave_id)
+            if res and not res.isError():
+                statistik_global.catat_sukses()
+                if tipe_reg in ('Holding', 'Input'):
+                    nilai_mentah = list(res.registers[:jumlah])
+                    nilai_decode = dekode_register_multi(nilai_mentah, encoding)
+                    try:
+                        nilai_akhir = f"{(float(nilai_decode) * skala) + offset:.4f}"
+                    except (ValueError, TypeError):
+                        nilai_akhir = nilai_decode
+                else:
+                    nilai_mentah = [int(res.bits[0])]
+                    nilai_akhir = str(bool(res.bits[0]))
+                item_hasil = {'nama': nama, 'nilai_mentah': str(nilai_mentah), 'nilai_akhir': nilai_akhir, 'status': 'OK'}
+            elif res:
+                statistik_global.catat_gagal()
+                item_hasil = {'nama': nama, 'nilai_mentah': '-', 'nilai_akhir': terjemahkan_respon_modbus(res), 'status': 'ERROR'}
+            else:
+                item_hasil = {'nama': nama, 'nilai_mentah': '-', 'nilai_akhir': 'Tidak ada respons', 'status': 'ERROR'}
+        except Exception as e:
+            adalah_timeout = "timeout" in str(e).lower()
+            statistik_global.catat_gagal(adalah_timeout=adalah_timeout)
+            catat_kesalahan(f"Baca tag {nama} (tunggal)", e)
+            item_hasil = {'nama': nama, 'nilai_mentah': '-', 'nilai_akhir': f"Error: {e}", 'status': 'ERROR'}
+        finally:
+            kunci_komunikasi.unlock()
+
+        self._perbarui_baris_tabel_tag(baris, item_hasil)
+        stempel = datetime.now().strftime("%H:%M:%S")
+        self._log_dibatasi(self.txt_tag_monitor, f"[{stempel}] Baca tag '{nama}': {item_hasil['nilai_akhir']}")
 
 
     def matikan_semua_thread_aktif(self):
