@@ -1,0 +1,5 @@
+pymodbus>=2.5.3
+PyQt5
+pyqtgraph
+pandas
+mysql-connector-python
