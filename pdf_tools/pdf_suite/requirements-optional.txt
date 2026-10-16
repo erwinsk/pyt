@@ -1,0 +1,3 @@
+# Dipasang di venv yang sama agar terdeteksi otomatis (atau pakai pipx, lalu pastikan ada di PATH).
+ocrmypdf
+archive-pdf-tools

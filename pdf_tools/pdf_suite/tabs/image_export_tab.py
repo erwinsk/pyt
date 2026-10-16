@@ -13,13 +13,15 @@ dipindah ke sini dan dibungkus GUI konsisten dengan tab Compressor.
 """
 
 import os
-import fitz  # PyMuPDF
+from core.pdfcompat import fitz  # PyMuPDF (pymupdf / fitz)
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget, QFileDialog,
-    QLabel, QSpinBox, QMessageBox, QProgressBar, QTextEdit, QComboBox,
-    QListWidgetItem, QLineEdit
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
+    QLabel, QSpinBox, QMessageBox, QProgressBar, QComboBox, QLineEdit
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import QThread, pyqtSignal
+
+from widgets.file_list import FileListWidget
+from widgets.log_console import LogConsole
 
 
 def pdf_to_images(pdf_path, output_folder, dpi=150, fmt="png"):
@@ -50,7 +52,7 @@ def pdf_to_images(pdf_path, output_folder, dpi=150, fmt="png"):
 class ImageExportThread(QThread):
     progress = pyqtSignal(int)
     log = pyqtSignal(str)
-    finished = pyqtSignal(str)
+    all_done = pyqtSignal(str)
 
     def __init__(self, tasks, output_root, dpi, fmt):
         super().__init__()
@@ -72,7 +74,7 @@ class ImageExportThread(QThread):
             except Exception as e:
                 self.log.emit(f"Error pada {os.path.basename(pdf_path)}: {str(e)}")
             self.progress.emit(int(((i + 1) / total) * 100))
-        self.finished.emit("Ekspor selesai.")
+        self.all_done.emit("Ekspor selesai.")
 
 
 class ImageExportTab(QWidget):
@@ -87,21 +89,8 @@ class ImageExportTab(QWidget):
     def init_ui(self):
         layout = QVBoxLayout()
 
-        layout.addWidget(QLabel("Daftar PDF (Drag & Drop):"))
-        self.file_list = QListWidget()
-        layout.addWidget(self.file_list)
-
-        list_btns = QHBoxLayout()
-        self.btn_add = QPushButton("Tambah File")
-        self.btn_add.clicked.connect(self.manual_add)
-        self.btn_remove = QPushButton("Hapus Terpilih")
-        self.btn_remove.clicked.connect(self.remove_selected)
-        self.btn_clear = QPushButton("Reset Semua")
-        self.btn_clear.clicked.connect(self.reset_ui)
-        list_btns.addWidget(self.btn_add)
-        list_btns.addWidget(self.btn_remove)
-        list_btns.addWidget(self.btn_clear)
-        layout.addLayout(list_btns)
+        self.files = FileListWidget()
+        layout.addWidget(self.files)
 
         # Folder output
         out_layout = QHBoxLayout()
@@ -130,9 +119,7 @@ class ImageExportTab(QWidget):
 
         # Log & progress
         layout.addWidget(QLabel("Log Aktivitas:"))
-        self.console = QTextEdit()
-        self.console.setReadOnly(True)
-        self.console.setStyleSheet("background: #1e1e1e; color: #ffffff; font-family: Consolas;")
+        self.console = LogConsole()
         layout.addWidget(self.console)
         self.pbar = QProgressBar()
         layout.addWidget(self.pbar)
@@ -145,43 +132,11 @@ class ImageExportTab(QWidget):
 
         self.setLayout(layout)
 
-    def update_indexes(self):
-        for i in range(self.file_list.count()):
-            item = self.file_list.item(i)
-            path = item.data(Qt.UserRole)
-            item.setText(f"[{i+1}] {os.path.basename(path)}")
-
-    def add_pdf_item(self, path):
-        if not any(self.file_list.item(i).data(Qt.UserRole) == path for i in range(self.file_list.count())):
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, path)
-            self.file_list.addItem(item)
-            self.update_indexes()
-
-    def remove_selected(self):
-        for item in self.file_list.selectedItems():
-            self.file_list.takeItem(self.file_list.row(item))
-        self.update_indexes()
-
-    def reset_ui(self):
-        self.file_list.clear()
-        self.pbar.setValue(0)
-        self.console.clear()
-
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.accept()
+        self.files.accept_drag(event)
 
     def dropEvent(self, event):
-        for url in event.mimeData().urls():
-            path = url.toLocalFile()
-            if path.lower().endswith('.pdf'):
-                self.add_pdf_item(path)
-
-    def manual_add(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Pilih PDF", "", "PDF Files (*.pdf)")
-        for f in files:
-            self.add_pdf_item(f)
+        self.files.handle_drop(event)
 
     def browse_output_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Pilih Folder Output")
@@ -189,22 +144,21 @@ class ImageExportTab(QWidget):
             self.edit_output.setText(folder)
 
     def start_process(self):
-        count = self.file_list.count()
-        if count == 0:
+        tasks = self.files.files()
+        if not tasks:
             return
         output_root = self.edit_output.text().strip()
         if not output_root:
             QMessageBox.warning(self, "Peringatan", "Pilih folder output terlebih dahulu.")
             return
 
-        tasks = [self.file_list.item(i).data(Qt.UserRole) for i in range(count)]
 
         self.btn_run.setEnabled(False)
         self.pbar.setValue(0)
         self.thread = ImageExportThread(
             tasks, output_root, self.spin_dpi.value(), self.combo_format.currentText()
         )
-        self.thread.log.connect(lambda m: self.console.append(m))
+        self.thread.log.connect(lambda m: self.console.append_line(m))
         self.thread.progress.connect(self.pbar.setValue)
-        self.thread.finished.connect(lambda m: [QMessageBox.information(self, "Selesai", m), self.btn_run.setEnabled(True)])
+        self.thread.all_done.connect(lambda m: [QMessageBox.information(self, "Selesai", m), self.btn_run.setEnabled(True)])
         self.thread.start()

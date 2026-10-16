@@ -5,6 +5,8 @@ Name=PDF Tools Suite
 Comment=Kompresi PDF & Ekspor PDF ke Gambar
 # Sesuaikan path di bawah ini ke lokasi file hasil compile Anda
 Exec=/usr/bin/pdf-tools-suite
+# Alternatif tanpa compile (jalankan dari venv):
+# Exec=/home/erwin/mrc-env/bin/python /path/ke/pdf_suite/main.py
 # Sesuaikan path ke file gambar/icon jika ada
 Icon=/home/erwin/.local/share/icons/pdfcu.ico
 Terminal=false

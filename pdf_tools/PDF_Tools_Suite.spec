@@ -2,13 +2,16 @@
 # Update: sekarang meng-compile pdf_suite/main.py (aplikasi gabungan
 # Compressor + PDF->Gambar), bukan lagi ultimate-pdf-compresor.py.
 # Jalankan spec ini dari dalam folder pdf_tools/.
+# CATATAN: alat eksternal (Ghostscript, Tesseract, ocrmypdf, recode_pdf, jbig2enc, dst.) TIDAK
+# ikut dibundel. Di Linux lebih sederhana menjalankan dari venv + file .desktop; bundel PyInstaller
+# sebaiknya dipakai untuk Windows setelah alat-alatnya diisi lewat tab "Dependensi & Cache".
 
 a = Analysis(
     ['pdf_suite/main.py'],
     pathex=['pdf_suite'],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=['platformdirs'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
