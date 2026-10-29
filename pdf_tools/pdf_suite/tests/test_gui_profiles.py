@@ -296,26 +296,135 @@ def test_export_and_import_flow(ui, monkeypatch):
 
 
 # ------------------------------------------------------------ tata letak
-def test_expanded_layout_never_overlaps_and_parameters_stay_usable(ui, qapp):
-    """Regresi: main.py menetapkan ukuran minimum jendela eksplisit sehingga Qt tidak otomatis
-    membesarkan jendela mengikuti isi. Tanpa area gulir pembungkus, isi panel atas yang lebih
-    tinggi dari panelnya saling menimpa (mis. area parameter tertutup baris cache OCR)."""
-    t = ui.tab
-    t.apply_profile("scan_terkecil")                 # MRC: baris cache OCR ikut tampil
+def _overlaps(widgets):
+    """Pasangan widget (terlihat) yang persegi panjangnya saling menimpa, dalam koordinat jendela."""
+    rects = []
+    for w in widgets:
+        if w.isVisible():
+            tl = w.mapTo(w.window(), w.rect().topLeft())
+            rects.append((w, tl.x(), tl.y(), w.width(), w.height()))
+    bad = []
+    for i, (w1, x1, y1, a1, b1) in enumerate(rects):
+        for (w2, x2, y2, a2, b2) in rects[i + 1:]:
+            if x1 < x2 + a2 - 1 and x2 < x1 + a1 - 1 and y1 < y2 + b2 - 1 and y2 < y1 + b1 - 1:
+                bad.append((w1.objectName() or type(w1).__name__, w2.objectName() or type(w2).__name__))
+    return bad
+
+
+@pytest.mark.parametrize("size", [(1000, 600), (1100, 680), (1366, 700)])
+@pytest.mark.parametrize("profile", ["dokumen_ringan", "scan_terkecil"])
+def test_layout_never_overlaps_and_settings_column_fits(ui, qapp, size, profile):
+    """Regresi tata letak: pada beberapa ukuran jendela, bagian utama tidak saling menimpa dan
+    kolom pengaturan tidak meluber ke samping (tanpa itu kontrol terpotong di kolom sempit)."""
+    w, t = ui.window, ui.tab
+    w.resize(*size)
+    t.apply_profile(profile)
     t.btn_adv.setChecked(True)
-    for _ in range(4):
+    for _ in range(6):
         qapp.processEvents()
-    top = t.top_scroll.widget()
-    assert top.height() >= top.minimumSizeHint().height()        # kekurangan ruang -> gulir, bukan menimpa
-    assert t.stack.parentWidget().parentWidget().height() >= 220  # area parameter tetap layak pakai
-    bottom_min = t._split.widget(1).minimumSizeHint().height()
-    assert t._split.sizes()[1] <= bottom_min + 2                 # panel atas diberi ruang sebesar mungkin
+    parts = [t.files, t.right_scroll, t.btn_open, t.pbar, t.lbl_status, t.btn_cancel, t.btn_run, t.drawer]
+    assert _overlaps(parts) == []
+    body = t.right_scroll.widget()
+    assert body.width() <= t.right_scroll.viewport().width() + 1        # tidak ada kontrol terpotong di kanan
+    assert t.right_scroll.horizontalScrollBar().maximum() == 0
     t.btn_adv.setChecked(False)
     for _ in range(4):
         qapp.processEvents()
-    assert t.top_scroll.verticalScrollBar().maximum() == 0       # dilipat: tidak perlu gulir lagi
-    sizes = t._split.sizes()
-    assert sizes[1] > bottom_min + 5                             # proporsi awal dikembalikan
+    assert not t.adv_box.isVisible()
+
+
+def test_footer_and_queue_fit_at_minimum_size(ui, qapp, sample_scan):
+    w, t = ui.window, ui.tab
+    w.resize(w.minimumWidth(), w.minimumHeight())
+    t.files.add_path(str(sample_scan))
+    for _ in range(4):
+        qapp.processEvents()
+    assert t.table.horizontalScrollBar().maximum() == 0                 # kolom antrean muat tanpa gulir samping
+    assert t.table.columnWidth(0) >= 120                                # nama file tidak menciut jadi '…'
+
+
+def test_missing_tool_message_is_visible_even_when_advanced_is_collapsed(ui, qapp):
+    from core.deps import ToolStatus
+    t = ui.tab
+    tools = dict(ui.window.ctx.tools)
+    tools["recode_pdf"] = ToolStatus("recode_pdf", "recode")
+    ui.window.ctx.tools = tools
+    t.btn_adv.setChecked(False)
+    t.combo_engine.setCurrentIndex(t.combo_engine.findData("mrc"))
+    t.on_tools_changed()
+    qapp.processEvents()
+    assert t.lbl_avail.isVisible() and "belum terpasang" in t.lbl_avail.text() and not t.adv_box.isVisible()
+    assert "recode_pdf" in t.lbl_avail.text() and "Buka Dependensi" in t.lbl_avail.text()
+    ui.window.update_tools_chip()
+    assert ui.window.btn_tools.property("state") == "warn" and "bermasalah" in ui.window.btn_tools.text()
+
+
+def test_dependency_link_and_chip_open_the_deps_dialog(ui, qapp):
+    w = ui.window
+    assert not w.deps_dialog.isVisible()
+    ui.tab.request_deps.emit()
+    qapp.processEvents()
+    assert w.deps_dialog.isVisible()
+    w.deps_dialog.close()
+    w.btn_tools.click()
+    qapp.processEvents()
+    assert w.deps_dialog.isVisible()
+    w.deps_dialog.close()
+
+
+def test_chip_reports_ready_when_all_tools_found(ui):
+    from core import deps as D
+    w = ui.window
+    w.ctx.tools = {s.id: D.ToolStatus(s.id, s.label, found=True, path="/x", version="1") for s in D.TOOL_SPECS}
+    w.update_tools_chip()
+    assert w.btn_tools.property("state") == "ok" and w.btn_tools.text() == f"✓ {len(D.TOOL_SPECS)} alat siap"
+
+
+def test_queue_is_single_table_with_per_file_status(ui, sample_scan, sample_text):
+    t = ui.tab
+    t.files.add_path(str(sample_scan))
+    t.files.add_path(str(sample_text))
+    assert t.table.rowCount() == 2 and t.files.files() == [str(sample_scan), str(sample_text)]
+    assert [t.table.item(r, 6).text() for r in range(2)] == ["siap", "siap"]
+    assert not t.files.add_path(str(sample_scan))                       # duplikat ditolak
+    t.table.set_locked(True)
+    assert not t.files.add_path(str(sample_scan.parent / "lain.pdf"))    # terkunci saat proses
+    t.table.set_locked(False)
+    t.table.selectRow(0)
+    t.files.remove_selected()
+    assert t.files.files() == [str(sample_text)]
+    t.files.reset()
+    assert t.table.rowCount() == 0
+
+
+def test_log_drawer_opens_on_failure(ui, qapp, sample_text, workspace):
+    t = ui.tab
+    assert not t.drawer.is_open()
+    t.console.append_line("baris pertama")
+    assert t.drawer.lbl_last.full_text() == "baris pertama"
+    t._on_file_done(0, {"status": "gagal"}) if t.table.rowCount() else None
+    t.table.start()
+    t.files.add_path(str(sample_text))
+    t._on_file_done(0, {"status": "gagal", "orig": 1})
+    assert t.drawer.is_open()
+
+
+def test_image_tab_has_per_file_status(ui, qapp, sample_scan, workspace, monkeypatch):
+    img = ui.window.image_export
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: QMessageBox.Ok))
+    out = workspace["tmp"] / "gambar"
+    img.files.add_path(str(sample_scan))
+    img.files.add_path(str(sample_scan.parent / "hilang.pdf"))
+    img.edit_output.setText(str(out))
+    img.start_process()
+    t0 = time.time()
+    while not img.btn_run.isEnabled() and time.time() - t0 < 60:
+        qapp.processEvents()
+        time.sleep(0.05)
+    assert img.btn_run.isEnabled()
+    assert img.table.item(0, 2).text() == "selesai" and int(img.table.item(0, 1).text()) >= 1
+    assert img.table.item(1, 2).text() == "gagal" and img.drawer.is_open()
+    assert list((out / sample_scan.stem).glob("*.png"))
 
 
 def test_closing_window_with_pending_layout_timer_does_not_crash(qapp, workspace):

@@ -44,7 +44,7 @@ def leftovers(workspace):
 
 
 def test_window_structure(window):
-    assert [window.tabs.tabText(i) for i in range(3)] == ["Compressor", "PDF -> Gambar", "Dependensi && Cache"]
+    assert [window.tabs.tabText(i) for i in range(window.tabs.count())] == ["Kompres", "Atur Halaman", "PDF → Gambar"]
     t = window.compressor
     assert [t.combo_engine.itemData(i) for i in range(t.combo_engine.count())] == ["ghostscript", "full_image", "ocrmypdf", "mrc"]
 
@@ -144,7 +144,7 @@ def test_cache_label_and_delete_button(window, qapp, sample_scan, workspace):
     t.start_process(); wait_done(t, qapp)
     assert t.table.item(0, 5).text() == "dipakai"
     # tab Dependensi & Cache menampilkan entri lalu hapus lewat tombol
-    dc = window.tabs.widget(2)
+    dc = window.deps
     dc.populate_cache()
     assert dc.tbl_cache.rowCount() == 1 and "scan.pdf" in dc.tbl_cache.item(0, 0).text()
     t.delete_cache_current()
@@ -170,7 +170,7 @@ def test_cancel_via_tab(window, qapp, sample_scan, workspace):
     assert t.table.item(0, 6).text() == "dibatalkan"
     assert list(out.iterdir()) == []
     assert leftovers(workspace) == []
-    assert t.btn_run.isEnabled() and t.btn_cancel.text() == "BATAL"
+    assert t.btn_run.isEnabled() and t.btn_cancel.text() == "Batal"
 
 
 def test_failure_shown_in_table(window, qapp, sample_text, workspace):
@@ -207,7 +207,7 @@ def test_settings_persist(qapp, workspace, monkeypatch):
 
 
 def test_deps_tab_lists_tools_and_hints(window, qapp):
-    dc = window.tabs.widget(2)
+    dc = window.deps
     from core.deps import TOOL_SPECS
     assert dc.tbl_tools.rowCount() == len(TOOL_SPECS)
     dc.tbl_tools.selectRow(0)

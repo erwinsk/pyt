@@ -168,7 +168,7 @@ def tab(qapp, workspace):
 class SimpleTab:
     def __init__(self, window):
         self.window = window
-        self.deps = window.tabs.widget(2)
+        self.deps = window.deps
         self.compressor = window.compressor
         self.ctx = window.compressor.ctx
 

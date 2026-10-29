@@ -1,32 +1,36 @@
 # -*- coding: utf-8 -*-
-"""Tab Compressor dengan tiga tingkat pilihan:
+"""Tab Kompres. Tata letak horizontal: antrean file di kiri, pengaturan (kartu) di kanan, log laci di footer.
+
+Tiga tingkat pilihan tetap sama:
   1. Tujuan   — profil siap pakai (combo teratas; bisa disimpan/diekspor/diimpor)
   2. Metode   — Ghostscript / Full Image / OCRmyPDF / MRC
   3. Parameter— panel opsi lengkap tiap metode
 Tingkat 2-3 ada di bagian 'lanjutan' yang bisa dilipat. Ketiganya selalu konsisten: mengubah
 metode/parameter membuat Tujuan berpindah ke 'Kustom' (atau profil lain bila nilainya sama)."""
+import html
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (QAction, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QFont, QKeySequence
+from PyQt5.QtWidgets import (QAction, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
                              QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox, QProgressBar, QPushButton,
-                             QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout,
+                             QScrollArea, QShortcut, QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout,
                              QWidget)
 
 from core.engines import ENGINES, get_engine
 from core.profiles import CATEGORY_LABELS, CUSTOM_ID, ProfileError, engine_name
 from core.runner import JobRunner, OutputConfig
-from widgets.common import open_folder
-from widgets.file_list import FileListWidget
-from widgets.log_console import LogConsole
+from widgets.common import WrapLabel, ShrinkCheck, fit_popup, make_shrinkable, open_folder, side_width
+from widgets.log_console import ElidedLabel, LogDrawer
 from widgets.option_panel import OptionPanel
-from widgets.result_table import ResultTable
+from widgets.queue import CompressTable, QueuePanel
 
 POLICIES = [("unik", "Buat nama unik (_2, _3 …)"), ("timpa", "Timpa file lama"), ("lewati", "Lewati")]
 
 
 class CompressorTab(QWidget):
+    request_deps = pyqtSignal()        # pengguna minta dialog Dependensi (mis. dari pesan alat belum terpasang)
+
     def __init__(self, ctx):
         super().__init__()
         self.ctx = ctx
@@ -41,38 +45,73 @@ class CompressorTab(QWidget):
         # Timer milik widget (bukan QTimer.singleShot + lambda): ikut terhapus bersama widget,
         # jadi tidak pernah memanggil objek yang sudah dihancurkan (PyQt5 abort() bila slot
         # melempar exception).
-        self._rebalance_timer = QTimer(self)
-        self._rebalance_timer.setSingleShot(True)
-        self._rebalance_timer.setInterval(0)
-        self._rebalance_timer.timeout.connect(self._rebalance)
-        self._rebalance_expanded = False
+        self._reveal_timer = QTimer(self)
+        self._reveal_timer.setSingleShot(True)
+        self._reveal_timer.setInterval(30)
+        self._reveal_timer.timeout.connect(self._reveal_adv)
         self._build()
         self._restore()
         self.ctx.tools_changed.connect(self.on_tools_changed)
 
     # ------------------------------------------------------------------ UI
+    @staticmethod
+    def _card(title: str = ""):
+        f = QFrame()
+        f.setObjectName("card")
+        lay = QVBoxLayout(f)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(8)
+        if title:
+            t = QLabel(title.upper())
+            t.setObjectName("cardTitle")
+            lay.addWidget(t)
+        return f, lay
+
     def _build(self):
         root = QVBoxLayout(self)
-        split = QSplitter(Qt.Vertical)
-        self._split = split
-        root.addWidget(split)
+        root.setContentsMargins(14, 12, 14, 10)
+        root.setSpacing(10)
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        root.addLayout(body, 1)
 
-        top = QWidget()
-        tl = QVBoxLayout(top)
-        tl.setContentsMargins(0, 0, 0, 0)
-        self.files = FileListWidget()
-        self.files.list.setMaximumHeight(90)
+        # ================= KIRI: antrean (daftar file + hasil dalam satu tabel) =================
+        self.table = CompressTable()
+        self.files = QueuePanel(self.table)
         self.files.current_changed.connect(lambda _p: self._cache_timer.start())
         self.files.changed.connect(lambda: self._cache_timer.start())
         self.files.cleared.connect(self._on_cleared)
-        tl.addWidget(self.files)
+        body.addWidget(self.files, 1)
+
+        # ================= KANAN: pengaturan (kartu), bisa digulir =================
+        self.right_scroll = QScrollArea()
+        self.right_scroll.setObjectName("rightScroll")
+        self.right_scroll.setWidgetResizable(True)
+        self.right_scroll.setFrameShape(QFrame.NoFrame)
+        self.right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.right_scroll.setFixedWidth(side_width(1060))   # disesuaikan di resizeEvent
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 6, 0)
+        rl.setSpacing(10)
+        self.right_scroll.setWidget(right)
+        body.addWidget(self.right_scroll)
+
+        # Pesan alat belum terpasang: SELALU terlihat di sini (tidak ikut terlipat), lengkap dengan tautan.
+        self.lbl_avail = WrapLabel()
+        self.lbl_avail.setObjectName("banner")
+        self.lbl_avail.setTextFormat(Qt.RichText)
+        self.lbl_avail.linkActivated.connect(lambda _l: self.request_deps.emit())
+        self.lbl_avail.setVisible(False)
+        rl.addWidget(self.lbl_avail)
 
         # ---- Tingkat 1: Tujuan (profil) ----
+        c_goal, gl = self._card("Tujuan")
         prow = QHBoxLayout()
-        prow.addWidget(QLabel("Tujuan:"))
+        prow.setSpacing(6)
         self.combo_profile = QComboBox()
-        self.combo_profile.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.combo_profile.setMinimumContentsLength(32)
+        make_shrinkable(self.combo_profile, 6)
+        self.combo_profile.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.combo_profile.activated[int].connect(self._on_profile_activated)
         prow.addWidget(self.combo_profile, 1)
         self.btn_manage = QToolButton()
@@ -94,42 +133,93 @@ class CompressorTab(QWidget):
         menu.addAction(self.act_import)
         self.btn_manage.setMenu(menu)
         prow.addWidget(self.btn_manage)
-        tl.addLayout(prow)
-        self.lbl_profile = QLabel()
-        self.lbl_profile.setWordWrap(True)
+        gl.addLayout(prow)
+        self.lbl_profile = WrapLabel()
+        self.lbl_profile.setObjectName("hint")
         self.lbl_profile.setTextFormat(Qt.PlainText)
-        self.lbl_profile.setStyleSheet("color: #555;")
-        tl.addWidget(self.lbl_profile)
+        gl.addWidget(self.lbl_profile)
+        rl.addWidget(c_goal)
+
+        # ---- Keluaran (ringkas) ----
+        c_out, ol = self._card("Keluaran")
+        g = QGridLayout()
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(8)
+        g.setColumnStretch(1, 1)
+        g.addWidget(QLabel("Folder"), 0, 0)
+        self.edit_out = QLineEdit()
+        self.edit_out.setPlaceholderText("Kosong = folder file sumber")
+        self.edit_out.setToolTip("Folder tujuan hasil. Kosong = sama dengan folder file sumber.")
+        btn_b = QPushButton("…")
+        btn_b.setToolTip("Pilih folder hasil")
+        btn_b.setFixedWidth(38)
+        btn_b.clicked.connect(self.browse_out)
+        g.addWidget(self.edit_out, 0, 1)
+        g.addWidget(btn_b, 0, 2)
+        g.addWidget(QLabel("Nama"), 1, 0)
+        self.edit_tpl = QLineEdit("{nama}_{engine}")
+        self.edit_tpl.setToolTip("{nama} = nama file sumber, {engine} = id metode. Ekstensi .pdf otomatis.")
+        g.addWidget(self.edit_tpl, 1, 1, 1, 2)
+        g.addWidget(QLabel("Jika ada"), 2, 0)
+        self.combo_policy = QComboBox()
+        self.combo_policy.setToolTip("Tindakan bila file hasil dengan nama yang sama sudah ada.")
+        for v, t in POLICIES:
+            self.combo_policy.addItem(t, v)
+        make_shrinkable(self.combo_policy, 6)
+        g.addWidget(self.combo_policy, 2, 1, 1, 2)
+        ol.addLayout(g)
+        self.chk_guard = ShrinkCheck("Lewati bila tidak lebih kecil")
+        self.chk_guard.setChecked(True)
+        self.chk_guard.setToolTip("Hasil yang tidak lebih kecil dari file asli tidak disimpan (file asli sudah yang terbaik).\n"
+                                  "Tidak berlaku untuk OCRmyPDF: hasilnya boleh sedikit lebih besar karena lapisan teks OCR.")
+        ol.addWidget(self.chk_guard)
+        rl.addWidget(c_out)
+
+        # ---- Cache OCR (hanya untuk metode ber-OCR) ----
+        self.cache_row, cl = self._card("Cache OCR")
+        self.chk_cache = ShrinkCheck("Gunakan cache OCR")
+        self.chk_cache.setChecked(True)
+        self.chk_cache.setToolTip("Hasil OCR disimpan agar mengubah parameter ⚡ tidak mengulang OCR.\n"
+                                  "Cache tidak dihapus otomatis; hapus lewat tombol di sini atau dialog Dependensi dan cache (ikon ⚙).")
+        cl.addWidget(self.chk_cache)
+        crow = QHBoxLayout()
+        crow.setSpacing(8)
+        self.lbl_cache = WrapLabel()
+        self.lbl_cache.setObjectName("hint")
+        self.btn_del_cache = QPushButton("Hapus cache file ini")
+        self.btn_del_cache.clicked.connect(self.delete_cache_current)
+        crow.addWidget(self.lbl_cache, 1)
+        crow.addWidget(self.btn_del_cache, 0, Qt.AlignTop)
+        cl.addLayout(crow)
+        rl.addWidget(self.cache_row)
 
         # ---- Tingkat 2 + 3: Metode & Parameter (bisa dilipat) ----
-        self.btn_adv = QToolButton()
+        self.btn_adv = QPushButton()
+        self.btn_adv.setObjectName("link")
         self.btn_adv.setCheckable(True)
-        self.btn_adv.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        self.btn_adv.setAutoRaise(True)
         self.btn_adv.toggled.connect(self._toggle_adv)
-        tl.addWidget(self.btn_adv)
+        rl.addWidget(self.btn_adv)
 
-        self.adv_box = QWidget()
-        al = QVBoxLayout(self.adv_box)
-        al.setContentsMargins(0, 0, 0, 0)
+        self.adv_box, al = self._card("Metode")
         row = QHBoxLayout()
-        row.addWidget(QLabel("Metode:"))
+        row.setSpacing(8)
         self.combo_engine = QComboBox()
         for e in ENGINES:
             self.combo_engine.addItem(e.name, e.id)
+        make_shrinkable(self.combo_engine, 6)
         self.combo_engine.currentIndexChanged.connect(self.on_engine_changed)
         row.addWidget(self.combo_engine, 1)
-        self.btn_defaults = QPushButton("Reset parameter")
+        self.btn_defaults = QPushButton("Reset")
+        self.btn_defaults.setToolTip("Kembalikan parameter metode ini ke nilai bawaan")
         self.btn_defaults.clicked.connect(lambda: self.current_panel().reset_defaults())
         row.addWidget(self.btn_defaults)
         al.addLayout(row)
-        self.lbl_desc = QLabel()
-        self.lbl_desc.setWordWrap(True)
-        self.lbl_desc.setStyleSheet("color: #666;")
+        self.lbl_desc = WrapLabel()
+        self.lbl_desc.setObjectName("hint")
         al.addWidget(self.lbl_desc)
-        self.lbl_avail = QLabel()
-        self.lbl_avail.setWordWrap(True)
-        al.addWidget(self.lbl_avail)
+        self.lbl_legend = WrapLabel("↻ = mengubah ini mengulang OCR   ·   ⚡ = tanpa OCR ulang")
+        self.lbl_legend.setObjectName("hint")
+        al.addWidget(self.lbl_legend)
 
         self.stack = QStackedWidget()
         for e in ENGINES:
@@ -138,106 +228,61 @@ class CompressorTab(QWidget):
             panel.changed.connect(self._on_params_changed)
             self.panels[e.id] = panel
             self.stack.addWidget(panel)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.stack)
-        scroll.setMinimumHeight(220)
-        # Ignored (vertikal): tinggi yang diminta hanya minimumnya, bukan tinggi isi panel; tetap
-        # melebar bila ada ruang lebih. Tanpa ini panel atas selalu terlalu tinggi dan perlu digulir.
-        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
-        al.addWidget(scroll, 1)
-        tl.addWidget(self.adv_box, 1)
+        al.addWidget(self.stack)
+        rl.addWidget(self.adv_box)
+        rl.addStretch(1)
         self._rebuild_profile_items()
         self._toggle_adv(False)
 
-        # baris cache OCR
-        self.cache_row = QWidget()
-        cr = QHBoxLayout(self.cache_row)
-        cr.setContentsMargins(0, 0, 0, 0)
-        self.chk_cache = QCheckBox("Gunakan cache OCR")
-        self.chk_cache.setChecked(True)
-        self.chk_cache.setToolTip("Hasil OCR disimpan agar mengubah parameter ⚡ tidak mengulang OCR.\n"
-                                  "Cache tidak dihapus otomatis; hapus lewat tombol di sini atau tab Dependensi & Cache.")
-        self.lbl_cache = QLabel()
-        self.lbl_cache.setStyleSheet("color: #555;")
-        self.btn_del_cache = QPushButton("Hapus cache file ini")
-        self.btn_del_cache.clicked.connect(self.delete_cache_current)
-        cr.addWidget(self.chk_cache)
-        cr.addWidget(self.lbl_cache, 1)
-        cr.addWidget(self.btn_del_cache)
-        tl.addWidget(self.cache_row)
-        self.lbl_legend = QLabel("↻ = mengubah ini mengulang OCR   ·   ⚡ = tanpa OCR ulang")
-        self.lbl_legend.setStyleSheet("color: #888; font-size: 11px;")
-        tl.addWidget(self.lbl_legend)
-
-        # bagian bawah
-        bottom = QWidget()
-        bl = QVBoxLayout(bottom)
-        bl.setContentsMargins(0, 0, 0, 0)
-        out = QHBoxLayout()
-        out.addWidget(QLabel("Folder hasil:"))
-        self.edit_out = QLineEdit()
-        self.edit_out.setPlaceholderText("Kosong = sama dengan folder file sumber")
-        btn_b = QPushButton("Browse")
-        btn_b.clicked.connect(self.browse_out)
-        out.addWidget(self.edit_out, 1)
-        out.addWidget(btn_b)
-        self.chk_guard = QCheckBox("Lewati bila tidak lebih kecil")
-        self.chk_guard.setChecked(True)
-        self.chk_guard.setToolTip("Hasil yang tidak lebih kecil dari file asli tidak disimpan (file asli sudah yang terbaik).\n"
-                                  "Tidak berlaku untuk OCRmyPDF: hasilnya boleh sedikit lebih besar karena lapisan teks OCR.")
-        out.addWidget(self.chk_guard)
-        bl.addLayout(out)
-        nm = QHBoxLayout()
-        nm.addWidget(QLabel("Nama file:"))
-        self.edit_tpl = QLineEdit("{nama}_{engine}")
-        self.edit_tpl.setToolTip("{nama} = nama file sumber, {engine} = id metode. Ekstensi .pdf otomatis.")
-        self.combo_policy = QComboBox()
-        for v, t in POLICIES:
-            self.combo_policy.addItem(t, v)
-        nm.addWidget(self.edit_tpl, 1)
-        nm.addWidget(QLabel("Jika sudah ada:"))
-        nm.addWidget(self.combo_policy)
-        bl.addLayout(nm)
-        self.table = ResultTable()
-        self.table.setMinimumHeight(90)
-        bl.addWidget(self.table)
-        self.console = LogConsole()
-        self.console.setMinimumHeight(80)
-        bl.addWidget(self.console, 1)
+        # ================= FOOTER: progres + aksi =================
+        foot = QHBoxLayout()
+        foot.setSpacing(10)
+        self.btn_open = QPushButton("Buka folder hasil")
+        self.btn_open.clicked.connect(self.open_results)
         self.pbar = QProgressBar()
-        bl.addWidget(self.pbar)
-        btns = QHBoxLayout()
-        self.btn_run = QPushButton("MULAI PROSES KOMPRESI")
-        self.btn_run.setFixedHeight(42)
-        self.btn_run.setStyleSheet("font-weight: bold; background-color: #2c3e50; color: white;")
-        self.btn_run.clicked.connect(self.start_process)
-        self.btn_cancel = QPushButton("BATAL")
-        self.btn_cancel.setFixedHeight(42)
+        self.pbar.setTextVisible(False)
+        self.pbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.lbl_status = ElidedLabel("Siap")
+        self.lbl_status.setObjectName("statusText")
+        self.btn_cancel = QPushButton("Batal")
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self.cancel_process)
-        self.btn_open = QPushButton("Buka folder hasil")
-        self.btn_open.setFixedHeight(42)
-        self.btn_open.clicked.connect(self.open_results)
-        btns.addWidget(self.btn_run, 3)
-        btns.addWidget(self.btn_cancel, 1)
-        btns.addWidget(self.btn_open, 1)
-        bl.addLayout(btns)
+        self.btn_run = QPushButton("Mulai kompres")
+        self.btn_run.setObjectName("primary")
+        self.btn_run.setToolTip("Mulai proses (Ctrl+Enter)")
+        self.btn_run.clicked.connect(self.start_process)
+        for b in (self.btn_open, self.btn_cancel, self.btn_run):
+            b.setMinimumHeight(34)
+        mid = QVBoxLayout()          # status di atas progres: hemat lebar, tidak saling menimpa
+        mid.setSpacing(5)
+        mid.addWidget(self.lbl_status)
+        mid.addWidget(self.pbar)
+        foot.addWidget(self.btn_open)
+        foot.addSpacing(4)
+        foot.addLayout(mid, 1)
+        foot.addWidget(self.btn_cancel)
+        foot.addWidget(self.btn_run)
+        root.addLayout(foot)
+        self.pbar.valueChanged.connect(self._on_progress)
 
-        # Panel atas dibungkus area gulir: bila jendela/panel terlalu pendek untuk seluruh isinya
-        # (mis. bagian lanjutan terbuka), muncul scrollbar - bukan widget yang saling menimpa.
-        # (main.py menetapkan ukuran minimum jendela eksplisit sehingga Qt tidak otomatis
-        # membesarkan jendela mengikuti isi.)
-        top_scroll = QScrollArea()
-        top_scroll.setWidgetResizable(True)
-        top_scroll.setFrameShape(QFrame.NoFrame)
-        top_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        top_scroll.setWidget(top)
-        self.top_scroll = top_scroll
-        split.addWidget(top_scroll)
-        split.addWidget(bottom)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
+        # ================= LOG: laci satu baris =================
+        self.drawer = LogDrawer()
+        self.console = self.drawer.console
+        root.addWidget(self.drawer)
+
+        # pintasan papan ketik
+        QShortcut(QKeySequence("Ctrl+O"), self, activated=self.files.manual_add)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._shortcut_run)
+        QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self._shortcut_run)
+        QShortcut(QKeySequence("Ctrl+L"), self, activated=self.drawer.toggle)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.right_scroll.setFixedWidth(side_width(self.width()))
+
+    def _shortcut_run(self):
+        if self.btn_run.isEnabled():
+            self.start_process()
 
     # ----------------------------------------------------------- state
     def current_engine(self):
@@ -284,10 +329,19 @@ class CompressorTab(QWidget):
         self.lbl_desc.setText(e.description)
         for w in (self.cache_row, self.lbl_legend):
             w.setVisible(e.uses_ocr)
+        self.table.set_cache_column_visible(e.uses_ocr)
+        self._fit_stack()
         self.refresh_availability()
         self._cache_timer.start()
         if not self._applying:
             self._sync_profile()
+
+    def _fit_stack(self):
+        """Tinggi tumpukan panel = tinggi panel yang tampil, bukan yang tertinggi di antara semua metode."""
+        cur = self.panels[self.combo_engine.currentData()]
+        for p in self.panels.values():
+            p.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred if p is cur else QSizePolicy.Ignored)
+        self.stack.updateGeometry()
 
     def on_tools_changed(self):
         for p in self.panels.values():
@@ -305,9 +359,9 @@ class CompressorTab(QWidget):
             self.lbl_avail.setVisible(False)
         else:
             self.lbl_avail.setVisible(True)
-            self.lbl_avail.setText("<span style='color:#c62828'>Alat belum terpasang:</span><br>" +
-                                   "<br>".join(m.replace("<", "&lt;") for m in missing) +
-                                   "<br><i>Lihat tab 'Dependensi &amp; Cache'.</i>")
+            self.lbl_avail.setText("<b>Alat belum terpasang:</b><br>" +
+                                   "<br>".join(html.escape(m, quote=False) for m in missing) +
+                                   "<br><a href='deps'>Buka Dependensi</a> untuk melihat cara memasangnya.")
         self.btn_run.setEnabled(ok and self.runner is None)
 
     def update_cache_label(self):
@@ -341,7 +395,7 @@ class CompressorTab(QWidget):
     def _on_cleared(self):
         self.pbar.setValue(0)
         self.console.clear()
-        self.table.setRowCount(0)
+        self.lbl_status.set_full_text("Siap")
 
     def browse_out(self):
         d = QFileDialog.getExistingDirectory(self, "Pilih folder hasil")
@@ -394,6 +448,7 @@ class CompressorTab(QWidget):
                     add(p)
         cb.addItem("Kustom (atur manual)", CUSTOM_ID)
         cb.blockSignals(False)
+        fit_popup(cb)
 
     def _sync_profile(self):
         """Samakan tampilan Tujuan dengan metode+parameter yang sedang aktif."""
@@ -445,23 +500,12 @@ class CompressorTab(QWidget):
     def _toggle_adv(self, on: bool):
         self.adv_box.setVisible(on)
         self.btn_adv.setText(("▾ " if on else "▸ ") + "Metode && parameter (lanjutan)")
-        self._rebalance_expanded = on
-        self._rebalance_timer.start()
+        if on:
+            self._reveal_timer.start()      # gulir kolom kanan agar bagian yang baru dibuka terlihat
 
-    def _rebalance(self):
-        """Saat bagian lanjutan dibuka, beri panel atas ruang sebesar mungkin (panel hasil di bawah
-        cukup di tinggi minimumnya); saat dilipat, kembalikan ke proporsi awal. Pengguna tetap
-        bisa menggeser pembatas secara manual."""
-        expanded = self._rebalance_expanded
-        total = sum(self._split.sizes())
-        if total <= 0:
-            return
-        if expanded:
-            bottom = self._split.widget(1).minimumSizeHint().height()
-            self._split.setSizes([max(0, total - bottom), bottom])
-        else:
-            top = int(total * 0.6)
-            self._split.setSizes([top, total - top])
+    def _reveal_adv(self):
+        bar = self.right_scroll.verticalScrollBar()
+        bar.setValue(max(0, self.btn_adv.y() - 6))
 
     def save_profile_dialog(self):
         e, vals, store = self.current_engine(), self.current_panel().values(), self.ctx.profiles
@@ -541,6 +585,7 @@ class CompressorTab(QWidget):
         self.console.append_line(f"Tujuan: {prof.name if prof else 'Kustom'}  ·  Metode: {engine.name}")
         self.table.start(files)
         self.pbar.setValue(0)
+        self.lbl_status.set_full_text("Memproses… 0%")
         self._set_running(True)
         self.runner = JobRunner(engine, values, files, cfg, self.ctx.tools, self.ctx.cache,
                                 use_cache=self.chk_cache.isChecked() and engine.uses_ocr,
@@ -548,15 +593,25 @@ class CompressorTab(QWidget):
         self.runner.log.connect(self.console.append_line)
         self.runner.overall.connect(self.pbar.setValue)
         self.runner.file_started.connect(self.table.mark_running)
-        self.runner.file_done.connect(self.table.update_result)
+        self.runner.file_done.connect(self._on_file_done)
         self.runner.all_done.connect(self.on_all_done)
         self.runner.start()
+
+    def _on_file_done(self, r: int, res: dict):
+        self.table.update_result(r, res)
+        if res.get("status") == "gagal":
+            self.drawer.set_open(True)       # galat: laci log terbuka otomatis
+
+    def _on_progress(self, v: int):
+        if self.runner is not None:
+            self.lbl_status.set_full_text(f"Memproses… {v}%")
 
     def cancel_process(self):
         if self.runner:
             self.runner.cancel()
             self.btn_cancel.setEnabled(False)
             self.btn_cancel.setText("Membatalkan…")
+            self.lbl_status.set_full_text("Membatalkan…")
 
     def on_all_done(self, summary: dict):
         runner, self.runner = self.runner, None
@@ -564,7 +619,7 @@ class CompressorTab(QWidget):
             runner.wait(10000)          # pastikan thread benar-benar selesai sebelum dilepas
             runner.deleteLater()
         self._set_running(False)
-        self.btn_cancel.setText("BATAL")
+        self.btn_cancel.setText("Batal")
         self.refresh_availability()
         self._cache_timer.start()
         msg = f"Selesai: {summary['ok']} berhasil, {summary['failed']} gagal"
@@ -575,6 +630,9 @@ class CompressorTab(QWidget):
         if summary["cancelled"]:
             msg = "Dibatalkan. " + msg
         self.console.append_line(msg)
+        self.lbl_status.set_full_text(msg)
+        if summary["failed"]:
+            self.drawer.set_open(True)
         QMessageBox.information(self, "Selesai", msg)
 
     def _set_running(self, running: bool):
@@ -585,6 +643,7 @@ class CompressorTab(QWidget):
         self.combo_profile.setEnabled(not running)
         self.btn_manage.setEnabled(not running)
         self.stack.setEnabled(not running)
+        self.btn_defaults.setEnabled(not running)
 
     def is_busy(self) -> bool:
         return self.runner is not None and self.runner.isRunning()

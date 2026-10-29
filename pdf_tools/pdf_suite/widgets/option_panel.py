@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QD
 
 from core import schema as S
 from core.deps import tesseract_languages
+from widgets.common import ShrinkCheck, WrapLabel, make_shrinkable
 
 MARK_OCR = "↻"
 MARK_FAST = "⚡"
@@ -56,15 +57,20 @@ class OptionPanel(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
         basic = QFormLayout()
-        basic.setLabelAlignment(Qt.AlignLeft)
         self.adv_form = QFormLayout()
-        self.adv_form.setLabelAlignment(Qt.AlignLeft)
+        for f in (basic, self.adv_form):          # kolom pengaturan sempit: label panjang membungkus, bukan meluber
+            f.setLabelAlignment(Qt.AlignLeft)
+            f.setRowWrapPolicy(QFormLayout.WrapAllRows)
+            f.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            f.setVerticalSpacing(6)
+            f.setHorizontalSpacing(10)
         has_adv = False
         for opt in engine.options:
             w = self._make_widget(opt)
             self._widgets[opt.key] = w
-            label = QLabel(self._label_text(opt))
+            label = WrapLabel(self._label_text(opt))    # label panjang membungkus, tidak melebarkan kolom
             self._labels[opt.key] = label
             tip = opt.tooltip or opt.label
             if engine.uses_ocr:
@@ -83,9 +89,9 @@ class OptionPanel(QWidget):
         outer.addLayout(basic)
 
         self.adv_toggle = QToolButton()
+        self.adv_toggle.setObjectName("link")
         self.adv_toggle.setText("Lanjutan ▸")
         self.adv_toggle.setCheckable(True)
-        self.adv_toggle.setStyleSheet("QToolButton { border: none; font-weight: bold; }")
         self.adv_box = QWidget()
         self.adv_box.setLayout(self.adv_form)
         self.adv_box.setVisible(False)
@@ -105,7 +111,7 @@ class OptionPanel(QWidget):
 
     def _make_widget(self, opt) -> QWidget:
         if opt.kind == S.BOOL:
-            w = QCheckBox(((MARK_OCR if opt.affects_ocr else MARK_FAST) + " ") * self.engine.uses_ocr + opt.label)
+            w = ShrinkCheck(((MARK_OCR if opt.affects_ocr else MARK_FAST) + " ") * self.engine.uses_ocr + opt.label)
             w.setChecked(bool(opt.default))
             w.toggled.connect(self._on_changed)
         elif opt.kind == S.INT:
@@ -129,6 +135,7 @@ class OptionPanel(QWidget):
             for value, text in opt.choices:
                 w.addItem(text, value)
             w.setCurrentIndex(max(0, [c[0] for c in opt.choices].index(opt.default)))
+            make_shrinkable(w, 5)
             w.currentIndexChanged.connect(self._on_changed)
         elif opt.kind == S.LANGS:
             box = QWidget()

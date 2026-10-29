@@ -2,9 +2,22 @@
 
 Aplikasi GUI (PyQt5) untuk memperkecil PDF scan dan mengekspor PDF ke gambar.
 
+## Antarmuka
+
+Tata letak horizontal yang hemat ruang (minimum 1000×600, ukuran jendela diingat):
+antrean file di kiri (satu tabel: daftar file + hasil + status per file), pengaturan berupa kartu di kanan
+(Tujuan, Keluaran, Cache OCR, Metode & parameter yang dilipat), dan log berupa laci satu baris di footer
+(terbuka otomatis saat ada galat). Warna mengikuti palet sistem (terang/gelap otomatis).
+
+Pintasan: `Ctrl+O` tambah PDF · `Ctrl+Enter` mulai · `Del` hapus dari antrean · `Ctrl+L` log · `Ctrl+,` dependensi.
+
+Indikator di pojok kanan atas menampilkan "✓ N alat siap" atau "⚠ N alat bermasalah" (klik untuk membuka dialog
+Dependensi pada alat yang bermasalah). Bila metode yang dipilih butuh alat yang belum ada, pesannya selalu tampil di
+kolom pengaturan, lengkap dengan tautan ke dialog Dependensi.
+
 ## Tab
 
-1. **Compressor** — tiga tingkat pilihan (lihat bagian berikutnya). Empat metode, semuanya dengan
+1. **Kompres** — tiga tingkat pilihan (lihat bagian berikutnya). Empat metode, semuanya dengan
    parameter lengkap:
    | Metode | Cocok untuk | Catatan |
    |---|---|---|
@@ -12,11 +25,28 @@ Aplikasi GUI (PyQt5) untuk memperkecil PDF scan dan mengekspor PDF ke gambar.
    | **Full Image** | kompresi sederhana | halaman dirender jadi JPEG; teks menjadi gambar |
    | **OCRmyPDF** | scan yang harus tetap tampak asli | PDF searchable; optimasi JPEG/PNG |
    | **MRC (recode_pdf)** | scan berwarna, ukuran terkecil | mask teks JBIG2 + latar JPEG2000 + teks OCR |
-2. **PDF -> Gambar** — ekspor tiap halaman ke PNG/JPG.
-3. **Dependensi & Cache** — status alat eksternal, path kustom, perintah instal sesuai OS,
-   dan pengelolaan cache OCR.
+2. **Atur Halaman** (gaya PDF Arranger) — halaman dari banyak PDF dan gambar tampil sebagai thumbnail yang
+   bisa diurutkan dengan seret. Fitur:
+   * **Gabung**: tambahkan beberapa PDF/gambar, atur urutan, lalu *Simpan PDF* (semua halaman atau hanya yang terpilih).
+   * **Pisah**: per halaman, tiap N halaman, rentang kustom (`1-3, 4, 5-8, 9-`), atau per file sumber. Nama file
+     memakai templat `{nama}_{n}` (juga `{awal}`/`{akhir}`) dan **tidak pernah menimpa** file yang sudah ada.
+   * **Impor gambar** (PNG, JPG, BMP, GIF, TIFF, WebP) menjadi halaman PDF: ukuran sesuai gambar atau A4/Letter/A5/A3
+     dengan margin. JPEG/PNG disisipkan tanpa kompresi ulang; foto diputar sesuai EXIF.
+   * **Putar** 90° (lossless), **ubah ukuran halaman** (A3/A4/A5/A6/Letter/Legal/kustom; orientasi otomatis/potret/lanskap;
+     proporsi tetap atau diregangkan; margin), duplikat, sisipkan halaman kosong, hapus, geser, balik urutan.
+   * **Undo/redo** (Ctrl+Z / Ctrl+Y), pratinjau besar (klik ganda), slider ukuran thumbnail, PDF berpassword (diminta sandi).
+   * Pintasan (saat daftar halaman difokus): `Del` hapus · `Ctrl+R` / `Ctrl+Shift+R` putar · `Ctrl+D` duplikat ·
+     `Alt+←/→` geser · `Ctrl+O` tambah · `Ctrl+S` simpan.
 
-## Tiga tingkat pilihan (tab Compressor)
+   Batasan: *ubah ukuran* menempelkan halaman sebagai objek sehingga tautan/anotasi pada halaman itu tidak terbawa
+   (putar tanpa ubah ukuran tidak punya batasan ini); hasil gabung tidak membawa bookmark/daftar isi; TIFF multi-frame
+   hanya frame pertama. Menyimpan ke file yang sedang dipakai sebagai sumber ditolak.
+3. **PDF → Gambar** — ekspor tiap halaman ke PNG/JPG, dengan status per file.
+
+Dialog **Dependensi dan cache** (ikon ⚙) — status alat eksternal, path kustom, perintah instal sesuai OS,
+dan pengelolaan cache OCR.
+
+## Tiga tingkat pilihan (tab Kompres)
 
 Pengguna memilih **tujuan**, bukan engine. Pilihan lebih rinci tersedia bila dibutuhkan:
 
@@ -112,7 +142,7 @@ jumlah profil dibatasi.
 ## Instalasi
 
 ```bash
-# 1. Alat sistem (salin dari tab "Dependensi & Cache" sesuai distro Anda), contoh:
+# 1. Alat sistem (salin dari dialog Dependensi dan cache (ikon ⚙) sesuai distro Anda), contoh:
 # Debian/Ubuntu
 sudo apt install ghostscript tesseract-ocr tesseract-ocr-ind tesseract-ocr-eng pngquant unpaper jbig2
 # Fedora / Nobara
@@ -129,14 +159,14 @@ python main.py
 
 ### Bagaimana alat dicari
 
-Urutan: **path kustom** (tab Dependensi) → **`PATH`** → folder Python yang menjalankan aplikasi (mis. venv) →
+Urutan: **path kustom** (dialog Dependensi) → **`PATH`** → folder Python yang menjalankan aplikasi (mis. venv) →
 **folder instalasi pengguna** (`pip install --user` / pipx, mis. `~/.local/bin`) → `python -m modul`
 (hanya untuk alat yang punya modul, mis. OCRmyPDF).
 
 Folder instalasi pengguna dicari karena sering **tidak ada di `PATH`**: zsh tidak membaca `~/.bash_profile`,
 dan aplikasi yang dibuka dari peluncur desktop tidak memuat konfigurasi shell. Akibatnya `recode_pdf`
 (archive-pdf-tools) yang sudah terpasang dengan `pip install --user` dulu dilaporkan "tidak ada", sementara
-OCRmyPDF terdeteksi lewat cadangan `python -m`. Di tab Dependensi, pilih sebuah alat untuk melihat dari mana
+OCRmyPDF terdeteksi lewat cadangan `python -m`. Di dialog Dependensi, pilih sebuah alat untuk melihat dari mana
 ia ditemukan, atau **di mana saja** ia dicari bila tidak ditemukan.
 
 Alat yang **ditemukan tetapi gagal dijalankan** (mis. `ModuleNotFoundError` karena versi Python yang
@@ -159,14 +189,14 @@ Aplikasi **tidak pernah** menjalankan `sudo` atau memasang paket sendiri.
 ## File sementara dan cache
 
 * Semua yang dibuat aplikasi selain hasil akhir berada di **satu folder kerja** (cache bawaan OS,
-  lihat tab Dependensi & Cache) — bukan di `/tmp` dan bukan di samping PDF Anda.
+  lihat dialog Dependensi dan cache) — bukan di `/tmp` dan bukan di samping PDF Anda.
 * **Scratch** (gambar halaman, file antara) **selalu dihapus otomatis**, termasuk saat gagal atau
   dibatalkan. Proses eksternal diarahkan memakai scratch ini (`TMPDIR`/`TEMP`/`TMP`).
   Sisa scratch dari proses yang crash disapu saat aplikasi dibuka.
 * **Hasil ditulis atomik**: dibuat di scratch lalu dipindah ke folder tujuan hanya bila sukses,
   sehingga tidak ada file setengah jadi bila dibatalkan.
-* **Cache OCR tidak dihapus otomatis.** Hapus lewat "Hapus cache file ini" (tab Compressor) atau
-  tab Dependensi & Cache (per entri / semua).
+* **Cache OCR tidak dihapus otomatis.** Hapus lewat "Hapus cache file ini" (tab Kompres) atau
+  dialog Dependensi dan cache (per entri / semua).
   * MRC menyimpan **hOCR** (kecil); gambar halaman diekstrak ulang setiap proses.
   * OCRmyPDF bekerja dua tahap: PDF antara berlapis teks (disimpan di cache), lalu kompresi dengan
     `--mode skip`. Pada sampel uji, ukuran hasil identik dengan sekali jalan (834 KB vs 834 KB).
@@ -199,7 +229,7 @@ akhiran `_2`, `_3`, …; bisa diubah ke "Timpa" atau "Lewati").
 ```
 pdf_suite/
   main.py, app_context.py
-  core/                 # tanpa Qt, mudah diuji
+  core/                 # tanpa Qt, mudah diuji (termasuk arranger.py: gabung/pisah/putar/ubah ukuran)
     engines/            # base.py, ghostscript.py, full_image.py, ocrmypdf_engine.py, mrc_engine.py
     schema.py           # opsi didefinisikan SATU kali -> UI, validasi, kunci cache
     profiles.py         # Tingkat 1: profil bawaan/milik pengguna, pencocokan, ekspor/impor
@@ -209,8 +239,9 @@ pdf_suite/
     pdfinfo.py          # analisis PDF + tumpukan gambar MRC
     procutil.py         # subprocess + pembatalan pohon proses
     runner.py           # QThread antrian job
-  widgets/              # file_list, option_panel (dibangun dari skema), result_table, log_console
-  tabs/                 # compressor_tab, image_export_tab, deps_cache_tab
+  widgets/              # queue (antrean terpadu), page_list + arranger_dialogs (Atur Halaman), option_panel, log_console
+  theme.py              # stylesheet berbasis palet sistem
+  tabs/                 # compressor_tab, arranger_tab, image_export_tab, deps_cache_tab (dialog)
   tests/
 ```
 

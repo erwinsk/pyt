@@ -15,13 +15,15 @@ dipindah ke sini dan dibungkus GUI konsisten dengan tab Compressor.
 import os
 from core.pdfcompat import fitz  # PyMuPDF (pymupdf / fitz)
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
-    QLabel, QSpinBox, QMessageBox, QProgressBar, QComboBox, QLineEdit
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QFrame, QGridLayout,
+    QLabel, QSpinBox, QMessageBox, QProgressBar, QComboBox, QLineEdit, QSizePolicy, QShortcut
 )
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, Qt, pyqtSignal
+from PyQt5.QtGui import QKeySequence
 
-from widgets.file_list import FileListWidget
-from widgets.log_console import LogConsole
+from widgets.common import WrapLabel, make_shrinkable, open_folder, side_width
+from widgets.log_console import ElidedLabel, LogDrawer
+from widgets.queue import ImageTable, QueuePanel
 
 
 def pdf_to_images(pdf_path, output_folder, dpi=150, fmt="png"):
@@ -53,6 +55,8 @@ class ImageExportThread(QThread):
     progress = pyqtSignal(int)
     log = pyqtSignal(str)
     all_done = pyqtSignal(str)
+    file_started = pyqtSignal(int)             # indeks file yang mulai diproses
+    file_done = pyqtSignal(int, int, str)      # indeks, jumlah halaman (-1 = gagal), pesan
 
     def __init__(self, tasks, output_root, dpi, fmt):
         super().__init__()
@@ -64,6 +68,7 @@ class ImageExportThread(QThread):
     def run(self):
         total = len(self.tasks)
         for i, pdf_path in enumerate(self.tasks):
+            self.file_started.emit(i)
             try:
                 base_name = os.path.splitext(os.path.basename(pdf_path))[0]
                 out_folder = os.path.join(self.output_root, base_name)
@@ -71,8 +76,10 @@ class ImageExportThread(QThread):
                 images = pdf_to_images(pdf_path, out_folder, self.dpi, self.fmt)
                 self.log.emit(f"Selesai: {len(images)} halaman -> {out_folder}")
                 self.log.emit("-" * 20)
+                self.file_done.emit(i, len(images), out_folder)
             except Exception as e:
                 self.log.emit(f"Error pada {os.path.basename(pdf_path)}: {str(e)}")
+                self.file_done.emit(i, -1, str(e))
             self.progress.emit(int(((i + 1) / total) * 100))
         self.all_done.emit("Ekspor selesai.")
 
@@ -84,53 +91,112 @@ class ImageExportTab(QWidget):
         super().__init__()
         self.setAcceptDrops(True)
         self.output_folder = ""
+        self.thread = None
+        self._failed = 0
         self.init_ui()
 
     def init_ui(self):
-        layout = QVBoxLayout()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(14, 12, 14, 10)
+        root.setSpacing(10)
+        body = QHBoxLayout()
+        body.setSpacing(14)
+        root.addLayout(body, 1)
 
-        self.files = FileListWidget()
-        layout.addWidget(self.files)
+        # kiri: antrean dengan status per file
+        self.table = ImageTable()
+        self.files = QueuePanel(self.table)
+        body.addWidget(self.files, 1)
 
-        # Folder output
-        out_layout = QHBoxLayout()
-        out_layout.addWidget(QLabel("Folder Output:"))
+        # kanan: pengaturan
+        self._right = right = QWidget()
+        right.setFixedWidth(side_width(1060))
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(10)
+        card = QFrame()
+        card.setObjectName("card")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(12, 10, 12, 12)
+        cl.setSpacing(8)
+        title = QLabel("KELUARAN")
+        title.setObjectName("cardTitle")
+        cl.addWidget(title)
+        g = QGridLayout()
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(8)
+        g.setColumnStretch(1, 1)
+        g.addWidget(QLabel("Folder"), 0, 0)
         self.edit_output = QLineEdit()
-        self.edit_output.setPlaceholderText("Pilih folder tujuan (tiap PDF akan dibuatkan subfolder)...")
-        self.btn_browse_out = QPushButton("Browse")
+        self.edit_output.setPlaceholderText("Pilih folder tujuan…")
+        self.edit_output.setToolTip("Tiap PDF akan dibuatkan subfolder sendiri di dalam folder ini.")
+        self.btn_browse_out = QPushButton("…")
+        self.btn_browse_out.setToolTip("Pilih folder output")
+        self.btn_browse_out.setFixedWidth(38)
         self.btn_browse_out.clicked.connect(self.browse_output_folder)
-        out_layout.addWidget(self.edit_output, 1)
-        out_layout.addWidget(self.btn_browse_out)
-        layout.addLayout(out_layout)
-
-        # Settings
-        settings_layout = QHBoxLayout()
-        settings_layout.addWidget(QLabel("Format:"))
+        g.addWidget(self.edit_output, 0, 1)
+        g.addWidget(self.btn_browse_out, 0, 2)
+        g.addWidget(QLabel("Format"), 1, 0)
         self.combo_format = QComboBox()
         self.combo_format.addItems(["png", "jpg"])
-        settings_layout.addWidget(self.combo_format)
-        settings_layout.addWidget(QLabel("DPI:"))
+        make_shrinkable(self.combo_format, 6)
+        g.addWidget(self.combo_format, 1, 1, 1, 2)
+        g.addWidget(QLabel("DPI"), 2, 0)
         self.spin_dpi = QSpinBox()
         self.spin_dpi.setRange(36, 600)
         self.spin_dpi.setValue(150)
-        settings_layout.addWidget(self.spin_dpi)
-        settings_layout.addStretch(1)
-        layout.addLayout(settings_layout)
+        self.spin_dpi.setToolTip("Resolusi gambar. Lebih tinggi = lebih tajam tetapi file lebih besar.")
+        g.addWidget(self.spin_dpi, 2, 1, 1, 2)
+        cl.addLayout(g)
+        hint = WrapLabel("Setiap PDF diekspor ke subfolder bernama sama dengan file-nya, satu gambar per halaman.")
+        hint.setObjectName("hint")
+        cl.addWidget(hint)
+        rl.addWidget(card)
+        rl.addStretch(1)
+        body.addWidget(right)
 
-        # Log & progress
-        layout.addWidget(QLabel("Log Aktivitas:"))
-        self.console = LogConsole()
-        layout.addWidget(self.console)
+        # footer: progres + aksi
+        foot = QHBoxLayout()
+        foot.setSpacing(10)
+        self.btn_open = QPushButton("Buka folder output")
+        self.btn_open.clicked.connect(self.open_output)
         self.pbar = QProgressBar()
-        layout.addWidget(self.pbar)
-
-        self.btn_run = QPushButton("EKSPOR KE GAMBAR")
-        self.btn_run.setFixedHeight(45)
-        self.btn_run.setStyleSheet("font-weight: bold; background-color: #2c3e50; color: white;")
+        self.pbar.setTextVisible(False)
+        self.pbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.lbl_status = ElidedLabel("Siap")
+        self.lbl_status.setObjectName("statusText")
+        self.btn_run = QPushButton("Mulai ekspor")
+        self.btn_run.setObjectName("primary")
+        self.btn_run.setToolTip("Mulai ekspor (Ctrl+Enter)")
         self.btn_run.clicked.connect(self.start_process)
-        layout.addWidget(self.btn_run)
+        for b in (self.btn_open, self.btn_run):
+            b.setMinimumHeight(34)
+        mid = QVBoxLayout()          # status di atas progres: hemat lebar, tidak saling menimpa
+        mid.setSpacing(5)
+        mid.addWidget(self.lbl_status)
+        mid.addWidget(self.pbar)
+        foot.addWidget(self.btn_open)
+        foot.addSpacing(4)
+        foot.addLayout(mid, 1)
+        foot.addWidget(self.btn_run)
+        root.addLayout(foot)
 
-        self.setLayout(layout)
+        self.drawer = LogDrawer()
+        self.console = self.drawer.console
+        root.addWidget(self.drawer)
+
+        QShortcut(QKeySequence("Ctrl+O"), self, activated=self.files.manual_add)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._shortcut_run)
+        QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self._shortcut_run)
+        QShortcut(QKeySequence("Ctrl+L"), self, activated=self.drawer.toggle)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._right.setFixedWidth(side_width(self.width()))
+
+    def _shortcut_run(self):
+        if self.btn_run.isEnabled():
+            self.start_process()
 
     def dragEnterEvent(self, event):
         self.files.accept_drag(event)
@@ -143,6 +209,11 @@ class ImageExportTab(QWidget):
         if folder:
             self.edit_output.setText(folder)
 
+    def open_output(self):
+        folder = self.edit_output.text().strip()
+        if folder and os.path.isdir(folder):
+            open_folder(folder)
+
     def start_process(self):
         tasks = self.files.files()
         if not tasks:
@@ -152,13 +223,35 @@ class ImageExportTab(QWidget):
             QMessageBox.warning(self, "Peringatan", "Pilih folder output terlebih dahulu.")
             return
 
-
         self.btn_run.setEnabled(False)
+        self.files.set_enabled_controls(False)      # baris tidak boleh berubah selama ekspor
+        self._failed = 0
+        self.table.start()
         self.pbar.setValue(0)
+        self.lbl_status.set_full_text("Memproses… 0%")
         self.thread = ImageExportThread(
             tasks, output_root, self.spin_dpi.value(), self.combo_format.currentText()
         )
         self.thread.log.connect(lambda m: self.console.append_line(m))
-        self.thread.progress.connect(self.pbar.setValue)
-        self.thread.all_done.connect(lambda m: [QMessageBox.information(self, "Selesai", m), self.btn_run.setEnabled(True)])
+        self.thread.progress.connect(self._on_progress)
+        self.thread.file_started.connect(self.table.mark_running)
+        self.thread.file_done.connect(self._on_file_done)
+        self.thread.all_done.connect(self._on_all_done)
         self.thread.start()
+
+    def _on_progress(self, v: int):
+        self.pbar.setValue(v)
+        self.lbl_status.set_full_text(f"Memproses… {v}%")
+
+    def _on_file_done(self, r: int, pages: int, message: str):
+        self.table.mark_done(r, pages, message)
+        if pages < 0:
+            self._failed += 1
+            self.drawer.set_open(True)       # galat: laci log terbuka otomatis
+
+    def _on_all_done(self, m: str):
+        self.files.set_enabled_controls(True)
+        self.btn_run.setEnabled(True)
+        done = len(self.files.files()) - self._failed
+        self.lbl_status.set_full_text(m if not self._failed else f"{m} {done} berhasil, {self._failed} gagal.")
+        QMessageBox.information(self, "Selesai", m)

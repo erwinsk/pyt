@@ -1,4 +1,4 @@
 PyQt5
-PyMuPDF
+PyMuPDF>=1.24.3
 Pillow
 platformdirs
