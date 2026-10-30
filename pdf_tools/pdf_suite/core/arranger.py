@@ -334,10 +334,11 @@ def render_page(ref: PageRef, sources: Dict[int, Source], height_px: int = 800) 
             d.close()
 
 
-def render_thumb(doc: "fitz.Document", index: int, height_px: int) -> Tuple[int, int, bytes]:
-    """Render halaman sumber apa adanya (dengan /Rotate aslinya) untuk thumbnail."""
+def render_thumb(doc: "fitz.Document", index: int, long_px: int) -> Tuple[int, int, bytes]:
+    """Render halaman sumber apa adanya (dengan /Rotate aslinya) sehingga SISI TERPANJANG = long_px piksel.
+    (Berdasarkan sisi terpanjang, bukan tinggi, agar halaman lanskap pun tajam pada zoom besar.)"""
     pg = doc[index]
-    zoom = max(0.05, height_px / max(1.0, pg.rect.height))
+    zoom = max(0.02, long_px / max(1.0, pg.rect.width, pg.rect.height))
     pix = pg.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
     return pix.width, pix.height, bytes(pix.samples)
 

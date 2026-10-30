@@ -6,12 +6,14 @@ Model: daftar halaman (QListWidget) yang masing-masing menunjuk satu `core.arran
 Semua perubahan lewat `_mutate`, sehingga undo/redo selalu konsisten. Penyimpanan dan pembuatan
 thumbnail berjalan di thread terpisah agar UI tidak membeku.
 """
+import math
 import os
+from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import QThread, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QIcon, QImage, QKeySequence
+from PyQt5.QtGui import QImage, QKeySequence
 from PyQt5.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
                              QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidgetItem, QMenu, QMessageBox,
                              QProgressBar, QPushButton, QScrollArea, QShortcut, QSizePolicy, QSpinBox,
@@ -21,11 +23,29 @@ from core import arranger as A
 from widgets.arranger_dialogs import PageSizeDialog, PreviewDialog
 from widgets.common import ShrinkCheck, WrapLabel, make_shrinkable, open_folder, side_width
 from widgets.log_console import ElidedLabel, LogDrawer
-from widgets.page_list import PageList, compose_icon
+from widgets.page_list import PageList
 
-THUMB_H = 240                       # tinggi render thumbnail (px); ukuran tampil diatur tombol zoom
-ZOOM_LEVELS = (80, 100, 120, 140, 170, 200, 240)      # sisi thumbnail (px); 140 = 100%
-ZOOM_DEFAULT = 3
+THUMB_LONG = 240                    # sisi terpanjang thumbnail dasar (px), dirender sekali per halaman
+BASE_SIDE = 140                     # sisi tampil bawaan; 140 = 100% pada label zoom
+BASE_LEVELS = (80, 100, 120, 140, 170, 200, 240)
+HIRES_CAP = 4000                    # batas sisi render resolusi tinggi (px)
+HIRES_MAX_ENTRIES = 40              # batas cache render resolusi tinggi (halaman) dan ukuran totalnya
+HIRES_MAX_BYTES = 400 * 1024 * 1024
+
+
+def zoom_levels(max_side: int) -> list:
+    """Tingkat zoom (sisi terpanjang halaman, px) dari kecil sampai `max_side` = halaman selebar area tampilan.
+    Sampai 240 mengikuti BASE_LEVELS; di atasnya naik ×1,25 per langkah, dan tingkat terakhir PERSIS `max_side`."""
+    levels = [x for x in BASE_LEVELS if x <= max_side]
+    x = BASE_LEVELS[-1]
+    while True:
+        x = int(round(x * 1.25 / 10.0) * 10)
+        if x >= max_side:
+            break
+        levels.append(x)
+    if not levels or max_side > levels[-1] + 8:
+        levels.append(max_side)
+    return levels
 UNDO_LIMIT = 60
 _IMG = " ".join("*" + e for e in sorted(A.IMAGE_EXTS))
 FILE_FILTER = f"PDF dan gambar (*.pdf {_IMG});;PDF (*.pdf);;Gambar ({_IMG})"
@@ -56,12 +76,43 @@ class ThumbWorker(QThread):
                     if self._stop:
                         return
                     try:
-                        w, h, rgb = A.render_thumb(doc, i, THUMB_H)
+                        w, h, rgb = A.render_thumb(doc, i, THUMB_LONG)
                     except Exception:
                         continue
                     self.ready.emit(src.id, i, QImage(rgb, w, h, w * 3, QImage.Format_RGB888).copy())
             finally:
                 doc.close()
+
+
+class HiResWorker(QThread):
+    """Render ulang halaman yang SEDANG TERLIHAT pada resolusi tinggi (untuk zoom besar)."""
+    ready = pyqtSignal(int, int, int, QImage)       # id sumber, indeks halaman, sisi terpanjang (px), gambar
+
+    def __init__(self, jobs: List[Tuple[A.Source, int, int]]):
+        super().__init__()
+        self.jobs = jobs
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        docs = {}
+        try:
+            for src, idx, long_px in self.jobs:
+                if self._stop:
+                    return
+                try:
+                    doc = docs.get(src.id)
+                    if doc is None:
+                        doc = docs[src.id] = A.open_source(src)
+                    w, h, rgb = A.render_thumb(doc, idx, long_px)
+                except Exception:
+                    continue
+                self.ready.emit(src.id, idx, long_px, QImage(rgb, w, h, w * 3, QImage.Format_RGB888).copy())
+        finally:
+            for d in docs.values():
+                d.close()
 
 
 class BuildThread(QThread):
@@ -107,7 +158,6 @@ class ArrangerTab(QWidget):
         self._redo: List[List[A.PageRef]] = []
         self._pending_snap: Optional[List[A.PageRef]] = None
         self._workers: List[ThumbWorker] = []
-        self._pending_thumbs = set()
         self._job: Optional[BuildThread] = None
         self._busy = False
         self._last_dir = ""
@@ -116,10 +166,12 @@ class ArrangerTab(QWidget):
         self._thumb_timer.setSingleShot(True)
         self._thumb_timer.setInterval(80)
         self._thumb_timer.timeout.connect(self._flush_thumbs)
-        self._zoom_timer = QTimer(self)
-        self._zoom_timer.setSingleShot(True)
-        self._zoom_timer.setInterval(120)
-        self._zoom_timer.timeout.connect(self._apply_zoom)
+        self._hires_timer = QTimer(self)
+        self._hires_timer.setSingleShot(True)
+        self._hires_timer.setInterval(150)
+        self._hires_timer.timeout.connect(self._request_hires)
+        self.hires: "OrderedDict[Tuple[int, int], QImage]" = OrderedDict()     # render resolusi tinggi (LRU)
+        self._zoom_pref = BASE_SIDE                  # ukuran yang DIINGINKAN pengguna; yang efektif dibatasi lebar tampilan
         self._build()
         self._update_state()
 
@@ -201,6 +253,9 @@ class ArrangerTab(QWidget):
         self.list.reordered.connect(self._on_reordered)
         self.list.itemSelectionChanged.connect(self._update_state)
         self.list.itemDoubleClicked.connect(self._open_preview)
+        self.list.page_provider = self._provide
+        self.list.viewport_resized.connect(self._sync_layout)
+        self.list.verticalScrollBar().valueChanged.connect(lambda _v: self._hires_timer.start())
         left.addWidget(self.list, 1)
 
         info = QHBoxLayout()
@@ -216,7 +271,6 @@ class ArrangerTab(QWidget):
         info.addWidget(self.btn_zoom_out)
         info.addWidget(self.lbl_zoom)
         info.addWidget(self.btn_zoom_in)
-        self._zoom_idx = ZOOM_DEFAULT
         self._sync_zoom_ui()
         self.list.zoom_requested.connect(self.zoom_step)
         left.addLayout(info)
@@ -453,12 +507,9 @@ class ArrangerTab(QWidget):
         return "\n".join(lines)
 
     def _decorate(self, item: QListWidgetItem, ref: A.PageRef):
-        pm = compose_icon(self.thumbs.get((ref.src, ref.index)), ref, self.list.thumb_side())
-        icon = QIcon()
-        icon.addPixmap(pm, QIcon.Normal)
-        icon.addPixmap(pm, QIcon.Selected)          # tanpa tint biru saat dipilih: pratinjau tetap akurat
-        item.setIcon(icon)
+        """Gambar halaman dilukis oleh PageDelegate (langsung, hanya yang terlihat); di sini cukup tooltip + muat ulang."""
         item.setToolTip(self._tooltip(ref))
+        self.list.viewport().update()
 
     def _add_item(self, ref: A.PageRef, row: Optional[int] = None) -> QListWidgetItem:
         uid = self._next_uid
@@ -537,6 +588,7 @@ class ArrangerTab(QWidget):
             w.setEnabled(n > 0)
         self.btn_undo.setEnabled(bool(self._undo))
         self.btn_redo.setEnabled(bool(self._redo))
+        self._sync_layout()
 
     # ============================================================================== tambah file
     def _start_dir(self) -> str:
@@ -619,43 +671,139 @@ class ArrangerTab(QWidget):
 
     def _on_thumb(self, sid: int, idx: int, img: QImage):
         self.thumbs[(sid, idx)] = img
-        self._pending_thumbs.add((sid, idx))
         self._thumb_timer.start()
 
     def _flush_thumbs(self):
-        pend, self._pending_thumbs = self._pending_thumbs, set()
-        for r in range(self.list.count()):
-            it = self.list.item(r)
-            ref = self._ref(it)
-            if (ref.src, ref.index) in pend:
-                self._decorate(it, ref)
+        self.list.viewport().update()
+
+    def _best_long(self, key) -> int:
+        best = 0
+        for img in (self.thumbs.get(key), self.hires.get(key)):
+            if img is not None:
+                best = max(best, img.width(), img.height())
+        return best
+
+    def _provide(self, uid: int):
+        """Dipanggil delegate saat melukis: (PageRef, gambar terbaik yang tersedia) untuk halaman itu."""
+        ref = self.refs.get(uid)
+        if ref is None:
+            return None
+        key = (ref.src, ref.index)
+        lo, hi = self.thumbs.get(key), self.hires.get(key)
+        if hi is not None:
+            self.hires.move_to_end(key)                       # tandai baru dipakai (LRU)
+            if lo is None or max(hi.width(), hi.height()) > max(lo.width(), lo.height()):
+                return ref, hi
+        return ref, lo
+
+    # ---- zoom: dibatasi selebar area tampilan ----
+    def _max_aspect(self) -> float:
+        """Lebar/sisi-terpanjang terbesar di antara halaman (1.0 = ada halaman lanskap/persegi)."""
+        m = 0.0
+        for ref in self._ordered():
+            w, h = ref.display_size()
+            m = max(m, w / max(w, h, 1.0))
+        return m or 1.0
+
+    def _avail_width(self) -> int:
+        """Lebar maksimum satu sel halaman agar tetap muat di area tampilan (tanpa gulir mendatar).
+        Dihitung dari lebar WIDGET daftar (tidak berubah saat scrollbar vertikal muncul/hilang) dikurangi bingkai dan
+        cadangan scrollbar yang konservatif. Bila dihitung dari viewport, scrollbar yang baru muncul saat zoom besar
+        menyempitkan area setelah ukuran dihitung dan halaman sempat terpotong."""
+        lst = self.list
+        sb = lst.verticalScrollBar()
+        chrome = lst.width() - lst.viewport().width() - (sb.width() if sb.isVisible() else 0)   # bingkai + padding
+        reserve = max(20, sb.sizeHint().width() + 4)
+        return max(60, lst.width() - chrome - reserve - 2 * lst.spacing() - 24 - 2)
+
+    def _max_side(self) -> int:
+        """Zoom maksimum: sisi terpanjang halaman sehingga halaman TERLEBAR persis selebar area tampilan."""
+        return max(60, int(self._avail_width() / self._max_aspect()))
+
+    def _effective_side(self) -> int:
+        return min(self._zoom_pref, self._max_side())
+
+    def _sync_layout(self):
+        """Terapkan zoom efektif (ukuran pilihan dibatasi lebar tampilan) ke daftar; dipanggil saat jendela/halaman berubah."""
+        if not hasattr(self, "lbl_zoom"):
+            return
+        side = self._effective_side()
+        box_w = min(self._avail_width(), int(math.ceil(side * self._max_aspect())) + 1)
+        if (side, box_w) != (self.list.thumb_side(), self.list.box_width()):
+            self.list.set_thumb_geometry(side, box_w)
+            self._hires_timer.start()
+        self._sync_zoom_ui()
 
     def _sync_zoom_ui(self):
-        self.lbl_zoom.setText("%d%%" % round(ZOOM_LEVELS[self._zoom_idx] * 100 / ZOOM_LEVELS[ZOOM_DEFAULT]))
-        self.btn_zoom_out.setEnabled(self._zoom_idx > 0)
-        self.btn_zoom_in.setEnabled(self._zoom_idx < len(ZOOM_LEVELS) - 1)
+        side, levels = self._effective_side(), zoom_levels(self._max_side())
+        self.lbl_zoom.setText("%d%%" % round(side * 100 / BASE_SIDE))
+        can_in = any(x > side for x in levels)
+        self.btn_zoom_out.setEnabled(any(x < side for x in levels))
+        self.btn_zoom_in.setEnabled(can_in)
+        self.btn_zoom_in.setToolTip("Perbesar thumbnail (Ctrl++, atau Ctrl + roda mouse)" if can_in else
+                                    "Sudah selebar area tampilan (zoom maksimum)")
 
     def zoom_step(self, delta: int):
-        """Perbesar (+1) / perkecil (-1) thumbnail satu tingkat."""
-        idx = max(0, min(len(ZOOM_LEVELS) - 1, self._zoom_idx + (1 if delta > 0 else -1)))
-        if idx == self._zoom_idx:
-            return
-        self._zoom_idx = idx
-        self._sync_zoom_ui()
-        self._zoom_timer.start()                     # gambar ulang ikon ditunda sebentar agar klik beruntun tidak berat
+        """Perbesar (+1) / perkecil (-1) satu tingkat. Maksimum: halaman terlebar sama lebar dengan area tampilan."""
+        cur, levels = self._effective_side(), zoom_levels(self._max_side())
+        if delta > 0:
+            cand = [x for x in levels if x > cur]
+            new = cand[0] if cand else cur
+        else:
+            cand = [x for x in levels if x < cur]
+            new = cand[-1] if cand else cur
+        if new != cur:
+            self._zoom_pref = new
+            self._sync_layout()
 
-    def _apply_zoom(self):
-        self._zoom_timer.stop()
-        self.list.set_thumb_side(ZOOM_LEVELS[self._zoom_idx])
+    # ---- render resolusi tinggi untuk halaman yang terlihat ----
+    def _request_hires(self):
+        side = self._effective_side()
+        if side <= THUMB_LONG * 1.05:
+            return                                            # thumbnail dasar sudah cukup tajam
+        need = min(HIRES_CAP, side)
+        vh = self.list.viewport().height()
+        jobs, seen = [], set()
         for r in range(self.list.count()):
             it = self.list.item(r)
-            self._decorate(it, self._ref(it))
+            rect = self.list.visualItemRect(it)
+            if rect.bottom() < -vh or rect.top() > 2 * vh:
+                continue                                      # jauh di luar layar
+            ref = self._ref(it)
+            key = (ref.src, ref.index)
+            if ref.src is None or key in seen or self._best_long(key) >= need * 0.95:
+                continue
+            seen.add(key)
+            jobs.append((abs(rect.top()), self.sources[ref.src], ref.index, need))
+        if not jobs:
+            return
+        jobs.sort(key=lambda j: j[0])                         # yang paling dekat dengan bagian atas layar dulu
+        self._workers = [w for w in self._workers if w.isRunning()]
+        for w in self._workers:
+            if isinstance(w, HiResWorker):
+                w.stop()                                      # permintaan lama sudah usang
+        w = HiResWorker([(src, idx, px) for _d, src, idx, px in jobs])
+        w.ready.connect(self._on_hires)
+        self._workers.append(w)
+        w.start()
+
+    def _on_hires(self, sid: int, idx: int, long_px: int, img: QImage):
+        key = (sid, idx)
+        old = self.hires.get(key)
+        if old is None or max(img.width(), img.height()) > max(old.width(), old.height()):
+            self.hires[key] = img
+        self.hires.move_to_end(key)
+        total = sum(i.sizeInBytes() for i in self.hires.values())
+        while len(self.hires) > 1 and (len(self.hires) > HIRES_MAX_ENTRIES or total > HIRES_MAX_BYTES):
+            _k, dropped = self.hires.popitem(last=False)      # buang yang paling lama tak dipakai
+            total -= dropped.sizeInBytes()
+        self._thumb_timer.start()
 
     def wait_thumbs(self, timeout_ms: int = 20000):
-        """Tunggu semua thumbnail selesai (untuk tes)."""
+        """Tunggu semua thumbnail/render selesai (untuk tes)."""
         for w in list(self._workers):
             w.wait(timeout_ms)
-        QApplication.processEvents()                # teruskan sinyal thumbnail yang masih antre
+        QApplication.processEvents()                # teruskan sinyal yang masih antre
         self._thumb_timer.stop()
         self._flush_thumbs()
 
@@ -957,10 +1105,11 @@ class ArrangerTab(QWidget):
         for w in self._workers:
             w.wait()
         self._thumb_timer.stop()
-        self._zoom_timer.stop()
+        self._hires_timer.stop()
         # Lepas semua QPixmap/QIcon/QImage SEKARANG: bila baru dihancurkan setelah QApplication selesai, Qt crash saat keluar.
         self.list.clear()
         self.thumbs.clear()
+        self.hires.clear()
         self.refs.clear()
         self._undo.clear()
         self._redo.clear()

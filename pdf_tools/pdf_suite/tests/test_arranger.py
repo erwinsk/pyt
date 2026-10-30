@@ -196,6 +196,16 @@ def test_resize_path_has_same_orientation_as_lossless_path(tmp_path, src_rot, ex
     assert sum(quadrants(plain)) == 1                        # sanity: tepat satu kuadran merah
 
 
+@pytest.mark.parametrize("size", [(200, 300), (300, 200), (500, 500)])
+def test_render_thumb_longest_side_matches_request(tmp_path, size):
+    p = make_pdf(tmp_path / "t.pdf", ["T"], size=size)
+    with fitz.open(p) as d:
+        for long_px in (60, 240, 900):
+            w, h, rgb = A.render_thumb(d, 0, long_px)
+            assert abs(max(w, h) - long_px) <= 1 and len(rgb) == w * h * 3
+            assert abs(w / h - size[0] / size[1]) < 0.02
+
+
 def test_set_page_size_none_restores_original():
     r = A.PageRef(1, 0, (200, 300))
     r.set_page_size(A.PAGE_PRESETS["A4"], "portrait", margin=5)

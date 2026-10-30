@@ -9,27 +9,25 @@
 * File yang diseret dari pengelola file (drag & drop sistem) memancarkan `files_dropped`.
 * Ctrl + roda mouse memancarkan `zoom_requested(+1/-1)`.
 """
-from typing import List, Optional
+from typing import Callable, List, Optional, Tuple
 
-from PyQt5.QtCore import QPoint, QRect, QSize, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QImage, QMouseEvent, QPainter, QPalette, QPen, QPixmap, QTransform
-from PyQt5.QtWidgets import QAbstractItemView, QApplication, QListView, QListWidget, QListWidgetItem
+from PyQt5.QtCore import QPoint, QRect, QRectF, QSize, QTimer, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QImage, QMouseEvent, QPainter, QPalette, QPen
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QListView, QListWidget, QListWidgetItem, QStyle,
+                             QStyledItemDelegate)
 
 from core.arranger import PageRef
-from theme import mix
+from theme import is_dark, mix
 
 
-def compose_icon(thumb: Optional[QImage], ref: PageRef, side: int) -> QPixmap:
-    """Gambar halaman sebagaimana akan tersimpan: kanvas putih berbentuk ukuran hasil, isi diputar/disesuaikan."""
+def paint_page(p: QPainter, area: QRect, thumb: Optional[QImage], ref: PageRef, side: int):
+    """Gambar halaman sebagaimana akan tersimpan (putar + ukuran) langsung ke `area` (kotak ikon).
+    Kanvas putih berbentuk ukuran hasil, sisi terpanjangnya = `side`; isi diputar/disesuaikan. Tanpa pixmap perantara,
+    sehingga hemat memori pada zoom besar."""
     dw, dh = ref.display_size()
     scale = side / max(dw, dh, 1.0)
     cw, ch = max(10, round(dw * scale)), max(10, round(dh * scale))
-    pm = QPixmap(side, side)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setRenderHint(QPainter.SmoothPixmapTransform)
-    canvas = QRect((side - cw) // 2, (side - ch) // 2, cw, ch)
+    canvas = QRect(area.left() + (area.width() - cw) // 2, area.top() + (area.height() - ch) // 2, cw, ch)
     p.fillRect(canvas, Qt.white)
     if ref.src is not None:
         if thumb is None:
@@ -38,21 +36,64 @@ def compose_icon(thumb: Optional[QImage], ref: PageRef, side: int) -> QPixmap:
         else:
             m = round(ref.margin * scale) if ref.size else 0
             inner = canvas.adjusted(m, m, -m, -m)
-            img = thumb
-            if ref.rotation:
-                img = img.transformed(QTransform().rotate(ref.rotation), Qt.SmoothTransformation)
+            r = ref.rotation % 360
+            rw, rh = (thumb.height(), thumb.width()) if r % 180 else (thumb.width(), thumb.height())
             if ref.size and ref.fit != "stretch":
-                sz = img.size().scaled(inner.size(), Qt.KeepAspectRatio)
-                target = QRect(0, 0, sz.width(), sz.height())
-                target.moveCenter(inner.center())
+                sz = QSize(rw, rh).scaled(inner.size(), Qt.KeepAspectRatio)
             else:
-                target = inner
-            p.drawImage(target, img)
+                sz = inner.size()
+            iw, ih = (sz.height(), sz.width()) if r % 180 else (sz.width(), sz.height())   # ukuran gambar SEBELUM diputar
+            p.save()
+            p.setClipRect(canvas)
+            p.translate(inner.center())
+            p.rotate(r)
+            p.drawImage(QRect(-iw // 2, -ih // 2, iw, ih), thumb)
+            p.restore()
     p.setPen(QPen(QColor(160, 160, 160), 1))
     p.setBrush(Qt.NoBrush)
-    p.drawRect(canvas.adjusted(0, 0, -1, -1))
-    p.end()
-    return pm
+    p.drawRect(QRectF(canvas).adjusted(0.5, 0.5, -0.5, -0.5))      # offset setengah piksel: bingkai 1 px tajam, tidak kabur
+
+
+class PageDelegate(QStyledItemDelegate):
+    """Menggambar tiap sel halaman langsung (hanya yang terlihat): latar pilihan/hover, halaman, dan dua baris teks."""
+
+    def __init__(self, view: "PageList"):
+        super().__init__(view)
+        self.view = view
+
+    def sizeHint(self, option, index):
+        return QSize(self.view.gridSize())
+
+    def paint(self, p, option, index):
+        v = self.view
+        side, box_w = v.thumb_side(), v.box_width()
+        rect, pal = option.rect, option.palette
+        win, txt, base, hi = (pal.color(QPalette.Window), pal.color(QPalette.Text),
+                              pal.color(QPalette.Base), pal.color(QPalette.Highlight))
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        bg = None
+        if option.state & QStyle.State_Selected:
+            bg = mix(base, hi, 0.20 if is_dark(pal) else 0.16)
+        elif option.state & QStyle.State_MouseOver:
+            bg = mix(win, txt, 0.07)
+        if bg is not None:
+            p.setPen(Qt.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 8, 8)
+        area = QRect(rect.left() + (rect.width() - box_w) // 2, rect.top() + 6, box_w, side)
+        got = v.page_provider(index.data(Qt.UserRole)) if v.page_provider else None
+        if got is not None:
+            paint_page(p, area, got[1], got[0], side)
+        p.setPen(txt)
+        fm = p.fontMetrics()
+        y = area.bottom() + 6
+        for line in (index.data(Qt.DisplayRole) or "").split("\n")[:2]:
+            tr = QRect(rect.left() + 4, y, rect.width() - 8, fm.height())
+            p.drawText(tr, Qt.AlignHCenter | Qt.AlignVCenter, fm.elidedText(line, Qt.ElideMiddle, tr.width()))
+            y += fm.height()
+        p.restore()
 
 
 class PageList(QListWidget):
@@ -60,6 +101,7 @@ class PageList(QListWidget):
     about_to_reorder = pyqtSignal()         # tepat sebelum urutan berubah karena seret (untuk undo)
     reordered = pyqtSignal()
     zoom_requested = pyqtSignal(int)        # +1 / -1 (Ctrl + roda mouse)
+    viewport_resized = pyqtSignal()         # lebar area tampilan berubah (batas zoom ikut berubah)
 
     EMPTY_TITLE = "Seret PDF atau gambar ke sini"
     EMPTY_HINT = "atau klik “Tambah”. Halaman dari banyak file bisa digabung dan diurutkan."
@@ -86,7 +128,10 @@ class PageList(QListWidget):
         self.setDropIndicatorShown(False)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._side = 140
-        self.set_thumb_side(140)
+        self._box_w = 140
+        self.page_provider: Optional[Callable[[int], Optional[Tuple[PageRef, Optional[QImage]]]]] = None
+        self.setItemDelegate(PageDelegate(self))
+        self.set_thumb_geometry(140, 140)
         # status seret
         self._press_item: Optional[QListWidgetItem] = None
         self._press_pos = QPoint()
@@ -100,14 +145,27 @@ class PageList(QListWidget):
         self._auto_timer.timeout.connect(self._autoscroll_tick)
 
     # ---- ukuran ----
-    def set_thumb_side(self, side: int):
-        self._side = int(side)
+    def set_thumb_geometry(self, side: int, box_w: int):
+        """side = sisi terpanjang halaman (px); box_w = lebar sel isi (halaman potret lebih sempit dari side)."""
+        self._side, self._box_w = int(side), int(box_w)
         fm = self.fontMetrics()
-        self.setIconSize(QSize(self._side, self._side))
-        self.setGridSize(QSize(self._side + 24, self._side + 2 * fm.height() + 22))
+        self.setIconSize(QSize(self._box_w, self._side))
+        self.setGridSize(QSize(self._box_w + 24, self._side + 2 * fm.height() + 22))
+        self.scheduleDelayedItemsLayout()
+        self.viewport().update()
+
+    def set_thumb_side(self, side: int):
+        self.set_thumb_geometry(side, side)
 
     def thumb_side(self) -> int:
         return self._side
+
+    def box_width(self) -> int:
+        return self._box_w
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.viewport_resized.emit()
 
     # ---- pilihan & urutan ----
     def selected_rows(self) -> List[int]:

@@ -99,7 +99,10 @@ def test_add_pdfs_and_image_builds_list_with_thumbnails(arr, qapp):
     assert t.lbl_count.text() == "6 halaman"
     t.wait_thumbs()
     assert len(t.thumbs) == 6
-    assert all(not t.list.item(r).icon().isNull() for r in range(6))
+    img = t.list.viewport().grab().toImage()
+    pix = [img.pixelColor(x, y) for y in range(0, img.height(), 2) for x in range(0, img.width(), 2)]
+    assert sum(1 for c in pix if (c.red(), c.green(), c.blue()) == (160, 160, 160)) > 30      # bingkai halaman terlukis
+    assert sum(1 for c in pix if max(c.red(), c.green(), c.blue()) < 90) > 5                   # isi halaman (teks) terlukis
     ref_img = t._ordered()[5]                                  # gambar: A4 lanskap mengikuti bentuk gambar
     assert ref_img.size == (A.A4[1], A.A4[0])
 
@@ -317,8 +320,7 @@ def test_preview_dialog_and_zoom(arr, qapp):
     assert dlg.windowTitle() == "Halaman 3 dari 5"
     assert t.lbl_zoom.text() == "100%"
     t.zoom_step(-1)
-    t._apply_zoom()
-    assert t.list.thumb_side() == 120 and t.list.iconSize().width() == 120 and t.lbl_zoom.text() == "86%"
+    assert t.list.thumb_side() == 120 and t.list.iconSize().height() == 120 and t.lbl_zoom.text() == "86%"
 
 
 # ------------------------------------------------------------------------------- simpan / pisah
@@ -770,24 +772,197 @@ def test_right_click_and_empty_area_do_not_start_drag(shown):
 
 
 # ====================================================================================== zoom + / −
-def test_zoom_buttons_levels_limits_and_label(arr, qapp):
+def widest_cell_fits(t):
+    return t.list.gridSize().width() + 2 * t.list.spacing() <= t.list.viewport().width()
+
+
+@pytest.mark.parametrize("max_side,first,last", [(1000, 80, 1000), (300, 80, 300), (100, 80, 100), (60, 60, 60)])
+def test_zoom_levels_function(max_side, first, last):
+    from tabs.arranger_tab import zoom_levels
+    lv = zoom_levels(max_side)
+    assert lv[0] == first and lv[-1] == last and lv == sorted(set(lv))
+    for a_, b_ in zip(lv, lv[1:]):
+        assert b_ <= max(a_ * 1.3, a_ + 25) or b_ == last       # langkah wajar, tidak melompat jauh
+    if max_side >= 240:
+        assert {140, 240} <= set(lv)
+
+
+def test_zoom_goes_beyond_old_limit_up_to_full_viewer_width(arr, qapp):
+    """Dulu mentok 171% (240 px). Sekarang sampai halaman terlebar = lebar area tampilan, tidak lebih."""
     t = arr.tab
-    t.add_paths([arr.a])
+    arr.window.resize(1100, 700)
+    t.add_paths([arr.a])                                        # hanya halaman potret
+    qapp.processEvents()
     assert t.lbl_zoom.text() == "100%" and t.btn_zoom_in.isEnabled() and t.btn_zoom_out.isEnabled()
     t.btn_zoom_in.click()
-    t._apply_zoom()
     assert t.list.thumb_side() == 170 and t.lbl_zoom.text() == "121%"
-    for _ in range(10):
+    for _ in range(30):
         t.btn_zoom_in.click()
-    t._apply_zoom()
-    assert t.list.thumb_side() == 240 and not t.btn_zoom_in.isEnabled() and t.btn_zoom_out.isEnabled()
-    for _ in range(20):
+    assert t.list.thumb_side() == t._max_side() > 240          # melewati batas lama
+    assert not t.btn_zoom_in.isEnabled() and t.btn_zoom_out.isEnabled()
+    assert "maksimum" in t.btn_zoom_in.toolTip()
+    assert widest_cell_fits(t) and t.list.horizontalScrollBar().maximum() == 0   # tidak melebihi lebar tampilan
+    # halaman potret: sisi terpanjang (tinggi) boleh melebihi lebar tampilan, tetapi LEBAR halaman = lebar area
+    page_w = t.list.thumb_side() * t._max_aspect()
+    assert abs(page_w - t._avail_width()) <= 2
+    for _ in range(40):
         t.btn_zoom_out.click()
-    t._apply_zoom()
     assert t.list.thumb_side() == 80 and not t.btn_zoom_out.isEnabled() and t.lbl_zoom.text() == "57%"
-    assert not hasattr(t, "slider")
-    # ikon benar-benar digambar ulang dengan ukuran baru
-    assert t.list.item(0).icon().actualSize(t.list.iconSize()).width() <= 80
+
+
+def test_zoom_max_depends_on_page_shape_and_window(arr, qapp):
+    t = arr.tab
+    arr.window.resize(1100, 700)
+    t.add_paths([arr.a])                                        # potret 200x300
+    qapp.processEvents()
+    portrait_max = t._max_side()
+    assert abs(portrait_max - t._avail_width() / (200 / 300)) <= 2
+    t.add_paths([arr.b])                                        # + lanskap 300x200: kini lebar = sisi terpanjang
+    qapp.processEvents()
+    assert t._max_side() == t._avail_width() and t._max_side() < portrait_max
+    narrow_avail = t._avail_width()
+    arr.window.resize(1366, 700)
+    qapp.processEvents()
+    assert t._avail_width() > narrow_avail and t._max_side() == t._avail_width()     # jendela lebih lebar -> zoom maks lebih besar
+
+
+def test_zoom_preference_clamped_on_shrink_and_restored_on_grow(arr, qapp):
+    t = arr.tab
+    arr.window.resize(1366, 700)
+    t.add_paths([arr.a])
+    qapp.processEvents()
+    for _ in range(40):
+        t.btn_zoom_in.click()
+    big = t.list.thumb_side()
+    assert big == t._max_side()
+    arr.window.resize(1000, 700)                                # persempit: zoom ikut turun, tetap muat
+    qapp.processEvents()
+    small = t.list.thumb_side()
+    assert small < big and small == t._max_side() and widest_cell_fits(t)
+    arr.window.resize(1366, 700)                                # lebarkan lagi: kembali ke pilihan semula
+    qapp.processEvents()
+    assert t.list.thumb_side() == big
+    t.btn_zoom_out.click()                                      # mengecil dari ukuran efektif, bukan dari nilai lama
+    assert t.list.thumb_side() < big
+
+
+def test_portrait_only_cells_are_narrower_than_square(arr, qapp):
+    t = arr.tab
+    t.add_paths([arr.a])
+    qapp.processEvents()
+    assert t.list.box_width() < t.list.thumb_side()             # sel potret lebih sempit -> lebih banyak halaman per baris
+    t.add_paths([arr.b])
+    qapp.processEvents()
+    assert t.list.box_width() >= t.list.thumb_side()            # ada lanskap: sel selebar sisi terpanjang
+
+
+def make_line_pdf(path):
+    doc = fitz.open()
+    p = doc.new_page(width=200, height=300)
+    p.draw_line((100, 20), (100, 280), color=(0, 0, 0), width=1)      # garis 1 pt: kabur di thumbnail kecil
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+def darkest(img):
+    return min(img.pixelColor(x, y).red() for y in range(img.height()) for x in range(0, img.width()))
+
+
+def test_hires_render_makes_large_zoom_sharp(arr, qapp):
+    t = arr.tab
+    arr.window.resize(1100, 700)
+    t.add_paths([make_line_pdf(arr.tmp / "line.pdf")])
+    t.wait_thumbs()
+    key = next(iter(t.thumbs))
+    assert max(t.thumbs[key].width(), t.thumbs[key].height()) == 240
+    for _ in range(30):
+        t.btn_zoom_in.click()
+    side = t.list.thumb_side()
+    assert side > 400
+    t._request_hires()
+    t.wait_thumbs()
+    hi = t.hires[key]
+    assert max(hi.width(), hi.height()) >= side * 0.95
+    ref, img = t._provide(t.list.item(0).data(Qt.UserRole))
+    assert img is hi                                            # yang dilukis adalah versi tajam
+    assert darkest(hi) < 60 < darkest(t.thumbs[key])            # garis 1 pt: hitam di hires, kabur di thumbnail kecil
+    assert not t.list.viewport().grab().isNull()
+
+
+def test_no_hires_at_small_zoom_and_only_visible_pages_get_hires(arr, qapp):
+    t = arr.tab
+    arr.window.resize(1000, 600)
+    make_pdf(arr.tmp / "long.pdf", ["P%d" % i for i in range(120)])
+    t.add_paths([str(arr.tmp / "long.pdf")])
+    t.wait_thumbs()
+    from tabs.arranger_tab import HiResWorker
+    t._request_hires()
+    assert not [w for w in t._workers if isinstance(w, HiResWorker)] and not t.hires      # zoom kecil: tidak perlu
+    for _ in range(30):
+        t.btn_zoom_in.click()
+    qapp.processEvents()
+    t._request_hires()
+    t.wait_thumbs()
+    assert 0 < len(t.hires) < 12                                # hanya halaman yang terlihat (+ satu layar), bukan 120
+    visible_rows = [r for r in range(t.list.count()) if -t.list.viewport().height() <= t.list.visualItemRect(t.list.item(r)).top() <= 2 * t.list.viewport().height()]
+    keys = {(t._ref(t.list.item(r)).src, t._ref(t.list.item(r)).index) for r in visible_rows}
+    assert set(t.hires) <= keys
+
+
+def test_hires_cache_is_bounded_lru(arr, qapp, monkeypatch):
+    import tabs.arranger_tab as at
+    from PyQt5.QtGui import QImage
+    monkeypatch.setattr(at, "HIRES_MAX_ENTRIES", 3)
+    t = arr.tab
+    for i in range(7):
+        t._on_hires(1, i, 50, QImage(50, 50, QImage.Format_RGB888))
+    assert list(t.hires) == [(1, 4), (1, 5), (1, 6)]            # yang paling lama dibuang
+    monkeypatch.setattr(at, "HIRES_MAX_BYTES", 2 * 50 * 50 * 3 + 10)
+    t._on_hires(1, 7, 50, QImage(50, 50, QImage.Format_RGB888))
+    assert len(t.hires) <= 2 and (1, 7) in t.hires              # batas byte juga dihormati
+    t._on_hires(1, 7, 20, QImage(20, 20, QImage.Format_RGB888))
+    assert t.hires[(1, 7)].width() == 50                        # hasil lebih kecil tidak menimpa yang lebih tajam
+
+
+def test_painting_rotated_resized_and_blank_pages_at_large_zoom(arr, qapp):
+    t = arr.tab
+    arr.window.resize(1100, 700)
+    t.add_paths([arr.a, arr.b])
+    t.wait_thumbs()
+    select(t, 0)
+    t.rotate(90)
+    select(t, 1)
+    t.set_size_for_test = None
+    ref = t._ref(t.list.item(1))
+    ref.set_page_size(A.PAGE_PRESETS["Letter"], "auto", "fit", 12)
+    select(t, 3)
+    t.insert_blank()
+    for _ in range(30):
+        t.btn_zoom_in.click()
+    t.list.scrollToItem(t.list.item(0))
+    qapp.processEvents()
+    assert not t.list.viewport().grab().isNull()
+    t.zoom_step(-1)
+    t.zoom_step(-1)
+    assert not t.list.viewport().grab().isNull()
+
+
+def test_closing_window_while_hires_is_rendering_is_safe(qapp, workspace):
+    from app_context import AppContext
+    from main import PDFToolsSuite
+    p = make_pdf(workspace["tmp"] / "bigdoc.pdf", ["P%d" % i for i in range(60)])
+    w = PDFToolsSuite(AppContext())
+    w.show()
+    w.tabs.setCurrentWidget(w.arranger)
+    t = w.arranger
+    t.add_paths([p])
+    t.wait_thumbs()
+    for _ in range(30):
+        t.btn_zoom_in.click()
+    t._request_hires()                                          # worker resolusi tinggi sedang berjalan
+    w.close()
+    assert all(not wk.isRunning() for wk in t._workers) and not t.hires
 
 
 def test_zoom_by_ctrl_wheel_and_shortcut(arr, qapp):
@@ -796,18 +971,15 @@ def test_zoom_by_ctrl_wheel_and_shortcut(arr, qapp):
     ev = QWheelEvent(QPointF(20, 20), QPointF(20, 20), QPoint(0, 0), QPoint(0, 120), Qt.NoButton, Qt.ControlModifier,
                      Qt.NoScrollPhase, False)
     QApplication.sendEvent(t.list.viewport(), ev)
-    t._apply_zoom()
     assert t.list.thumb_side() == 170
     ev = QWheelEvent(QPointF(20, 20), QPointF(20, 20), QPoint(0, 0), QPoint(0, -120), Qt.NoButton, Qt.ControlModifier,
                      Qt.NoScrollPhase, False)
     QApplication.sendEvent(t.list.viewport(), ev)
     QApplication.sendEvent(t.list.viewport(), ev)
-    t._apply_zoom()
     assert t.list.thumb_side() == 120
     ev = QWheelEvent(QPointF(20, 20), QPointF(20, 20), QPoint(0, 0), QPoint(0, 120), Qt.NoButton, Qt.NoModifier,
                      Qt.NoScrollPhase, False)
     QApplication.sendEvent(t.list.viewport(), ev)             # tanpa Ctrl: menggulir biasa, bukan zoom
-    t._apply_zoom()
     assert t.list.thumb_side() == 120
 
 

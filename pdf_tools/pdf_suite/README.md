@@ -37,7 +37,10 @@ kolom pengaturan, lengkap dengan tautan ke dialog Dependensi.
    * **Seret untuk mengurutkan**: seret thumbnail (atau beberapa yang terpilih) ke posisi baru; garis biru menandai tempat
      sisipnya, daftar menggulir otomatis di tepi, `Esc` membatalkan. Ditangani lewat event mouse biasa (bukan drag & drop
      sistem), jadi perilakunya sama di semua platform.
-   * **Zoom thumbnail**: tombol **−** / **+** (juga `Ctrl++`, `Ctrl+-`, atau `Ctrl` + roda mouse).
+   * **Zoom thumbnail**: tombol **−** / **+** (juga `Ctrl++`, `Ctrl+-`, atau `Ctrl` + roda mouse). Batas maksimum adalah
+     saat halaman terlebar **sama lebar dengan area tampilan** (bukan angka tetap), jadi mengikuti ukuran jendela. Halaman
+     yang sedang terlihat dirender ulang pada resolusi tinggi agar teks tetap tajam saat diperbesar; hasilnya disimpan
+     dalam cache terbatas (maks. 40 halaman / 400 MB) supaya memori tidak membengkak.
    * **Undo/redo** (Ctrl+Z / Ctrl+Y), pratinjau besar (klik ganda), PDF berpassword (diminta sandi).
    * Pintasan (saat daftar halaman difokus): `Del` hapus · `Ctrl+R` / `Ctrl+Shift+R` putar · `Ctrl+D` duplikat ·
      `Alt+←/→` geser · `Ctrl+O` tambah · `Ctrl+S` simpan.
