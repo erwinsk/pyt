@@ -203,8 +203,6 @@ def test_set_page_size_none_restores_original():
     assert r.size is None and r.margin == 0 and r.display_size() == (200, 300)
 
 
-<<<<<<< HEAD
-=======
 def test_relative_scale_is_from_original_size_and_idempotent(tmp_path, two_pdfs):
     src = {}
     ra, rb = add(src, two_pdfs[0]), add(src, two_pdfs[1])           # A: 200x300 potret; B: 300x200 lanskap
@@ -259,7 +257,6 @@ def test_relative_scale_content_scales_with_page(tmp_path):
     assert px(0.25, 0.5) == (255, 0, 0) and px(0.75, 0.5)[1] > 200
 
 
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
 def test_describe_size():
     assert A.describe_size(A.PAGE_PRESETS["A4"]) == "A4"
     assert A.describe_size((841.89, 595.28)) == "A4"

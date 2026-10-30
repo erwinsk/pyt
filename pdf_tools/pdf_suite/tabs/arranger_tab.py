@@ -14,11 +14,7 @@ from PyQt5.QtCore import QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QIcon, QImage, QKeySequence
 from PyQt5.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
                              QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidgetItem, QMenu, QMessageBox,
-<<<<<<< HEAD
-                             QProgressBar, QPushButton, QScrollArea, QShortcut, QSizePolicy, QSlider, QSpinBox,
-=======
                              QProgressBar, QPushButton, QScrollArea, QShortcut, QSizePolicy, QSpinBox,
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
                              QToolButton, QVBoxLayout, QWidget)
 
 from core import arranger as A
@@ -27,13 +23,9 @@ from widgets.common import ShrinkCheck, WrapLabel, make_shrinkable, open_folder,
 from widgets.log_console import ElidedLabel, LogDrawer
 from widgets.page_list import PageList, compose_icon
 
-<<<<<<< HEAD
-THUMB_H = 240                       # tinggi render thumbnail (px); ukuran tampil diatur slider
-=======
 THUMB_H = 240                       # tinggi render thumbnail (px); ukuran tampil diatur tombol zoom
 ZOOM_LEVELS = (80, 100, 120, 140, 170, 200, 240)      # sisi thumbnail (px); 140 = 100%
 ZOOM_DEFAULT = 3
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
 UNDO_LIMIT = 60
 _IMG = " ".join("*" + e for e in sorted(A.IMAGE_EXTS))
 FILE_FILTER = f"PDF dan gambar (*.pdf {_IMG});;PDF (*.pdf);;Gambar ({_IMG})"
@@ -214,19 +206,6 @@ class ArrangerTab(QWidget):
         info = QHBoxLayout()
         self.lbl_count = QLabel()
         self.lbl_count.setObjectName("statusText")
-<<<<<<< HEAD
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setRange(80, 240)
-        self.slider.setValue(self.list.thumb_side())
-        self.slider.setFixedWidth(150)
-        self.slider.setToolTip("Ukuran thumbnail")
-        self.slider.valueChanged.connect(lambda _v: self._zoom_timer.start())
-        z = QLabel("Ukuran")
-        z.setObjectName("statusText")
-        info.addWidget(self.lbl_count, 1)
-        info.addWidget(z)
-        info.addWidget(self.slider)
-=======
         self.btn_zoom_out = self._tbtn("−", "Perkecil thumbnail (Ctrl+−, atau Ctrl + roda mouse)", lambda: self.zoom_step(-1))
         self.btn_zoom_in = self._tbtn("+", "Perbesar thumbnail (Ctrl++, atau Ctrl + roda mouse)", lambda: self.zoom_step(1))
         self.lbl_zoom = QLabel()
@@ -240,7 +219,6 @@ class ArrangerTab(QWidget):
         self._zoom_idx = ZOOM_DEFAULT
         self._sync_zoom_ui()
         self.list.zoom_requested.connect(self.zoom_step)
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
         left.addLayout(info)
         body.addLayout(left, 1)
 
@@ -400,13 +378,9 @@ class ArrangerTab(QWidget):
         for key, slot in (("Delete", self.delete_selected), ("Ctrl+D", self.duplicate),
                           ("Ctrl+R", lambda: self.rotate(90)), ("Ctrl+Shift+R", lambda: self.rotate(-90)),
                           ("Alt+Left", lambda: self.shift(-1)), ("Alt+Right", lambda: self.shift(1)),
-<<<<<<< HEAD
-                          ("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo)):
-=======
                           ("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo),
                           ("Ctrl++", lambda: self.zoom_step(1)), ("Ctrl+=", lambda: self.zoom_step(1)),
                           ("Ctrl+-", lambda: self.zoom_step(-1))):
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
             sc = QShortcut(QKeySequence(key), self.list)
             sc.setContext(Qt.WidgetShortcut)
             sc.activated.connect(slot)
@@ -458,13 +432,9 @@ class ArrangerTab(QWidget):
             bits.append("hal %d" % (ref.index + 1))
         if ref.rotation:
             bits.append("%d°" % ref.rotation)
-<<<<<<< HEAD
-        if ref.size:
-=======
         if ref.scale:
             bits.append("%d%%" % round(ref.scale * 100))
         elif ref.size:
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
             bits.append(A.describe_size(ref.size))
         return "%d · %s\n%s" % (pos, self._src_name(ref), " · ".join(bits))
 
@@ -476,11 +446,8 @@ class ArrangerTab(QWidget):
                 lines.append("Halaman %d" % (ref.index + 1))
         w, h = ref.display_size()
         lines.append("Ukuran hasil: %s" % A.describe_size((w, h)) + (" (diubah)" if ref.size else ""))
-<<<<<<< HEAD
-=======
         if ref.scale:
             lines.append("Skala: %d%% dari ukuran asli" % round(ref.scale * 100))
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
         if ref.rotation:
             lines.append("Putar tambahan: %d°" % ref.rotation)
         return "\n".join(lines)
@@ -663,10 +630,6 @@ class ArrangerTab(QWidget):
             if (ref.src, ref.index) in pend:
                 self._decorate(it, ref)
 
-<<<<<<< HEAD
-    def _apply_zoom(self):
-        self.list.set_thumb_side(self.slider.value())
-=======
     def _sync_zoom_ui(self):
         self.lbl_zoom.setText("%d%%" % round(ZOOM_LEVELS[self._zoom_idx] * 100 / ZOOM_LEVELS[ZOOM_DEFAULT]))
         self.btn_zoom_out.setEnabled(self._zoom_idx > 0)
@@ -684,7 +647,6 @@ class ArrangerTab(QWidget):
     def _apply_zoom(self):
         self._zoom_timer.stop()
         self.list.set_thumb_side(ZOOM_LEVELS[self._zoom_idx])
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
         for r in range(self.list.count()):
             it = self.list.item(r)
             self._decorate(it, self._ref(it))
@@ -787,11 +749,7 @@ class ArrangerTab(QWidget):
             for it in self._selected_items():
                 ref = self._ref(it)
                 if ref.rotation or ref.size:
-<<<<<<< HEAD
-                    ref.rotation, ref.size, ref.margin = 0, None, 0.0
-=======
                     ref.reset_changes()
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
                     self._decorate(it, ref)
                     changed = True
             return changed
@@ -820,13 +778,6 @@ class ArrangerTab(QWidget):
         items = self._selected_items() if v["scope"] == "selected" else [self.list.item(r) for r in range(self.list.count())]
 
         def op():
-<<<<<<< HEAD
-            for it in items:
-                ref = self._ref(it)
-                ref.set_page_size(v["size"], v["orientation"], v["fit"], v["margin"])
-                self._decorate(it, ref)
-            return bool(items)
-=======
             changed = False
             for it in items:
                 ref = self._ref(it)
@@ -839,7 +790,6 @@ class ArrangerTab(QWidget):
                     changed = True
                     self._decorate(it, ref)
             return changed                              # menerapkan ukuran yang sama tidak mencatat undo
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
         self._mutate(op)
 
     def _open_preview(self, item):

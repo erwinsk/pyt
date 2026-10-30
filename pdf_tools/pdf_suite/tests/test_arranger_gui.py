@@ -315,16 +315,10 @@ def test_preview_dialog_and_zoom(arr, qapp):
     assert dlg.lbl.pixmap().width() > dlg.lbl.pixmap().height()        # halaman 2 diputar -> lanskap
     dlg.go(1)
     assert dlg.windowTitle() == "Halaman 3 dari 5"
-<<<<<<< HEAD
-    t.slider.setValue(100)
-    t._apply_zoom()
-    assert t.list.thumb_side() == 100 and t.list.iconSize().width() == 100
-=======
     assert t.lbl_zoom.text() == "100%"
     t.zoom_step(-1)
     t._apply_zoom()
     assert t.list.thumb_side() == 120 and t.list.iconSize().width() == 120 and t.lbl_zoom.text() == "86%"
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
 
 
 # ------------------------------------------------------------------------------- simpan / pisah
@@ -588,8 +582,6 @@ def test_theme_follows_palette_change_at_runtime(qapp):
     finally:
         qapp.setPalette(old_pal)
         qapp.setStyleSheet(old_qss)
-<<<<<<< HEAD
-=======
 
 
 # ====================================================================== seret-urut dengan event mouse
@@ -876,4 +868,3 @@ def test_resize_relative_applies_per_page_relative_to_original(arr, qapp, monkey
     select(t, 0)
     t.reset_selected()
     assert t._ordered()[0].size is None and t._ordered()[0].scale == 0
->>>>>>> 36ee49d (update pdf tools, arrange pdf)
