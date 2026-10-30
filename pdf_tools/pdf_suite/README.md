@@ -33,8 +33,17 @@ kolom pengaturan, lengkap dengan tautan ke dialog Dependensi.
    * **Impor gambar** (PNG, JPG, BMP, GIF, TIFF, WebP) menjadi halaman PDF: ukuran sesuai gambar atau A4/Letter/A5/A3
      dengan margin. JPEG/PNG disisipkan tanpa kompresi ulang; foto diputar sesuai EXIF.
    * **Putar** 90° (lossless), **ubah ukuran halaman** (A3/A4/A5/A6/Letter/Legal/kustom; orientasi otomatis/potret/lanskap;
+<<<<<<< HEAD
      proporsi tetap atau diregangkan; margin), duplikat, sisipkan halaman kosong, hapus, geser, balik urutan.
    * **Undo/redo** (Ctrl+Z / Ctrl+Y), pratinjau besar (klik ganda), slider ukuran thumbnail, PDF berpassword (diminta sandi).
+=======
+     proporsi tetap atau diregangkan; margin; atau **relatif dalam %** terhadap ukuran asli tiap halaman), duplikat, sisipkan halaman kosong, hapus, geser, balik urutan.
+   * **Seret untuk mengurutkan**: seret thumbnail (atau beberapa yang terpilih) ke posisi baru; garis biru menandai tempat
+     sisipnya, daftar menggulir otomatis di tepi, `Esc` membatalkan. Ditangani lewat event mouse biasa (bukan drag & drop
+     sistem), jadi perilakunya sama di semua platform.
+   * **Zoom thumbnail**: tombol **−** / **+** (juga `Ctrl++`, `Ctrl+-`, atau `Ctrl` + roda mouse).
+   * **Undo/redo** (Ctrl+Z / Ctrl+Y), pratinjau besar (klik ganda), PDF berpassword (diminta sandi).
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
    * Pintasan (saat daftar halaman difokus): `Del` hapus · `Ctrl+R` / `Ctrl+Shift+R` putar · `Ctrl+D` duplikat ·
      `Alt+←/→` geser · `Ctrl+O` tambah · `Ctrl+S` simpan.
 

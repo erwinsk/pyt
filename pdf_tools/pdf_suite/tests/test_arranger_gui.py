@@ -315,9 +315,16 @@ def test_preview_dialog_and_zoom(arr, qapp):
     assert dlg.lbl.pixmap().width() > dlg.lbl.pixmap().height()        # halaman 2 diputar -> lanskap
     dlg.go(1)
     assert dlg.windowTitle() == "Halaman 3 dari 5"
+<<<<<<< HEAD
     t.slider.setValue(100)
     t._apply_zoom()
     assert t.list.thumb_side() == 100 and t.list.iconSize().width() == 100
+=======
+    assert t.lbl_zoom.text() == "100%"
+    t.zoom_step(-1)
+    t._apply_zoom()
+    assert t.list.thumb_side() == 120 and t.list.iconSize().width() == 120 and t.lbl_zoom.text() == "86%"
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
 
 
 # ------------------------------------------------------------------------------- simpan / pisah
@@ -581,3 +588,292 @@ def test_theme_follows_palette_change_at_runtime(qapp):
     finally:
         qapp.setPalette(old_pal)
         qapp.setStyleSheet(old_qss)
+<<<<<<< HEAD
+=======
+
+
+# ====================================================================== seret-urut dengan event mouse
+from PyQt5.QtCore import QEvent, QPoint
+from PyQt5.QtGui import QKeyEvent, QMouseEvent, QWheelEvent
+
+
+def mouse(lst, kind, pos, buttons=Qt.LeftButton, mods=Qt.NoModifier):
+    btn = Qt.LeftButton if kind in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick) else Qt.NoButton
+    QApplication.sendEvent(lst.viewport(), QMouseEvent(kind, QPoint(pos.x(), pos.y()), btn, buttons, mods))
+
+
+def drag(tab, from_row, to_pos, steps=4, release=True, mods=Qt.NoModifier):
+    """Tekan di tengah item `from_row`, gerakkan bertahap ke `to_pos`, (opsional) lepas."""
+    lst = tab.list
+    start = lst.visualItemRect(lst.item(from_row)).center()
+    mouse(lst, QEvent.MouseButtonPress, start, mods=mods)
+    for i in range(1, steps + 1):
+        p = QPoint(start.x() + (to_pos.x() - start.x()) * i // steps, start.y() + (to_pos.y() - start.y()) * i // steps)
+        mouse(lst, QEvent.MouseMove, p, mods=mods)
+    if release:
+        mouse(lst, QEvent.MouseButtonRelease, to_pos, mods=mods)
+    return start
+
+
+def left_of(tab, row):
+    r = tab.list.visualItemRect(tab.list.item(row))
+    return QPoint(r.left() + 4, r.center().y())
+
+
+def right_of(tab, row):
+    r = tab.list.visualItemRect(tab.list.item(row))
+    return QPoint(r.right() - 4, r.center().y())
+
+
+@pytest.fixture()
+def shown(arr, qapp):
+    arr.window.resize(1100, 700)
+    arr.tab.add_paths([arr.a, arr.b])                # A1 A2 A3 B1 B2
+    qapp.processEvents()
+    return arr
+
+
+def test_mouse_drag_single_item_reorders_and_undo_restores(shown, qapp):
+    t = shown.tab
+    drag(t, 4, left_of(t, 0))                         # B2 -> sebelum A1
+    assert order(t) == ["B2", "A1", "A2", "A3", "B1"]
+    assert t.list.selected_rows() == [0] and not t.list.is_dragging()
+    t.undo()
+    assert order(t) == ["A1", "A2", "A3", "B1", "B2"]
+    t.redo()
+    assert order(t) == ["B2", "A1", "A2", "A3", "B1"]
+
+
+def test_mouse_drag_to_right_half_and_to_end(shown):
+    t = shown.tab
+    drag(t, 0, right_of(t, 2))                        # A1 -> sesudah A3
+    assert order(t) == ["A2", "A3", "A1", "B1", "B2"]
+    drag(t, 0, right_of(t, 4))                        # A2 -> paling akhir
+    assert order(t) == ["A3", "A1", "B1", "B2", "A2"]
+
+
+def test_mouse_drag_moves_whole_multi_selection(shown):
+    t = shown.tab
+    select(t, 0, 1)
+    drag(t, 0, right_of(t, 4))                        # tekan item terpilih -> pilihan TIDAK runtuh, keduanya ikut
+    assert order(t) == ["A3", "B1", "B2", "A1", "A2"]
+    assert t.list.selected_rows() == [3, 4]
+    select(t, 1, 3)                                   # non-kontigu: tetap berurutan relatif
+    drag(t, 3, left_of(t, 0))
+    assert order(t) == ["B1", "A1", "A3", "B2", "A2"]
+
+
+def test_mouse_drag_shows_drop_line_and_cleans_up(shown, qapp):
+    t = shown.tab
+    drag(t, 0, left_of(t, 3), release=False)
+    assert t.list.is_dragging() and t.list._drop_target == 3
+    t.list.repaint()                                  # menggambar garis penanda tanpa galat
+    mouse(t.list, QEvent.MouseButtonRelease, left_of(t, 3))
+    assert not t.list.is_dragging() and t.list._drop_target is None and t.list._press_item is None
+
+
+def test_mouse_drag_escape_cancels(shown):
+    t = shown.tab
+    drag(t, 4, left_of(t, 0), release=False)
+    assert t.list.is_dragging()
+    QApplication.sendEvent(t.list, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+    assert not t.list.is_dragging()
+    mouse(t.list, QEvent.MouseButtonRelease, left_of(t, 0))
+    assert order(t) == ["A1", "A2", "A3", "B1", "B2"] and not t._undo[1:]      # tidak berubah
+
+
+def test_tiny_movement_is_a_click_not_a_drag(shown):
+    t = shown.tab
+    select(t, 0, 1, 2)
+    c = t.list.visualItemRect(t.list.item(1)).center()
+    mouse(t.list, QEvent.MouseButtonPress, c)
+    mouse(t.list, QEvent.MouseMove, QPoint(c.x() + 2, c.y()))
+    mouse(t.list, QEvent.MouseButtonRelease, QPoint(c.x() + 2, c.y()))
+    assert order(t) == ["A1", "A2", "A3", "B1", "B2"]
+    assert t.list.selected_rows() == [1]                # klik pada item terpilih: pilihan mengerucut ke item itu
+
+
+def test_click_selection_semantics_unchanged(shown):
+    t = shown.tab
+    c = lambda r: t.list.visualItemRect(t.list.item(r)).center()
+    mouse(t.list, QEvent.MouseButtonPress, c(1)); mouse(t.list, QEvent.MouseButtonRelease, c(1))
+    assert t.list.selected_rows() == [1]
+    mouse(t.list, QEvent.MouseButtonPress, c(3), mods=Qt.ControlModifier)
+    mouse(t.list, QEvent.MouseButtonRelease, c(3), mods=Qt.ControlModifier)
+    assert t.list.selected_rows() == [1, 3]             # Ctrl+klik menambah
+    mouse(t.list, QEvent.MouseButtonPress, c(0), mods=Qt.ShiftModifier)
+    mouse(t.list, QEvent.MouseButtonRelease, c(0), mods=Qt.ShiftModifier)
+    assert t.list.selected_rows() == [0, 1, 2, 3]       # Shift+klik: rentang dari item aktif
+    # Ctrl+seret tidak mengurutkan ulang
+    n_before = order(t)
+    drag(t, 0, right_of(t, 4), mods=Qt.ControlModifier)
+    assert order(t) == n_before
+
+
+def test_double_click_opens_preview_even_on_selected_item(shown, monkeypatch):
+    import tabs.arranger_tab as at
+    opened = []
+    monkeypatch.setattr(at.PreviewDialog, "exec_", lambda self: opened.append(self.i) or 0)   # dialog modal: jangan blokir tes
+    t = shown.tab
+    seen = []
+    t.list.itemDoubleClicked.connect(lambda it: seen.append(t.list.row(it)))
+    for pre_selected in (False, True):
+        seen.clear()
+        t.list.clearSelection()
+        if pre_selected:
+            select(t, 2)
+        c = t.list.visualItemRect(t.list.item(2)).center()
+        mouse(t.list, QEvent.MouseButtonPress, c)
+        mouse(t.list, QEvent.MouseButtonRelease, c)
+        mouse(t.list, QEvent.MouseButtonDblClick, c)
+        mouse(t.list, QEvent.MouseButtonRelease, c)
+        assert seen == [2], "pre_selected=%s" % pre_selected
+        assert opened[-1] == 2                              # pratinjau benar-benar dibuka untuk halaman itu
+
+
+def test_drag_autoscrolls_near_edges(arr, qapp):
+    t = arr.tab
+    arr.window.resize(1000, 600)
+    make_pdf(arr.tmp / "many.pdf", ["P%d" % i for i in range(80)])
+    t.add_paths([str(arr.tmp / "many.pdf")])
+    qapp.processEvents()
+    bar = t.list.verticalScrollBar()
+    assert bar.maximum() > 0 and bar.value() == 0
+    vp = t.list.viewport()
+    start = t.list.visualItemRect(t.list.item(0)).center()
+    mouse(t.list, QEvent.MouseButtonPress, start)
+    mouse(t.list, QEvent.MouseMove, QPoint(start.x() + 40, start.y() + 40))
+    mouse(t.list, QEvent.MouseMove, QPoint(start.x() + 40, vp.height() - 4))      # dekat tepi bawah
+    assert t.list.is_dragging()
+    before = bar.value()
+    for _ in range(5):
+        t.list._autoscroll_tick()
+    assert bar.value() > before
+    mouse(t.list, QEvent.MouseMove, QPoint(start.x() + 40, 3))                     # dekat tepi atas
+    mid = bar.value()
+    for _ in range(3):
+        t.list._autoscroll_tick()
+    assert bar.value() < mid
+    mouse(t.list, QEvent.MouseButtonRelease, QPoint(start.x() + 40, 3))
+    assert not t.list.is_dragging()
+
+
+def test_drag_is_cancelled_when_list_gets_disabled(shown):
+    t = shown.tab
+    drag(t, 0, left_of(t, 3), release=False)
+    assert t.list.is_dragging()
+    t.list.setEnabled(False)                           # mis. pekerjaan simpan dimulai
+    assert not t.list.is_dragging()
+    t.list.setEnabled(True)
+
+
+def test_right_click_and_empty_area_do_not_start_drag(shown):
+    t = shown.tab
+    c = t.list.visualItemRect(t.list.item(0)).center()
+    QApplication.sendEvent(t.list.viewport(), QMouseEvent(QEvent.MouseButtonPress, QPoint(c.x(), c.y()), Qt.RightButton, Qt.RightButton, Qt.NoModifier))
+    QApplication.sendEvent(t.list.viewport(), QMouseEvent(QEvent.MouseMove, QPoint(c.x() + 100, c.y()), Qt.NoButton, Qt.RightButton, Qt.NoModifier))
+    assert not t.list.is_dragging()
+    QApplication.sendEvent(t.list.viewport(), QMouseEvent(QEvent.MouseButtonRelease, QPoint(c.x() + 100, c.y()), Qt.RightButton, Qt.NoButton, Qt.NoModifier))
+    assert order(t) == ["A1", "A2", "A3", "B1", "B2"]
+
+
+# ====================================================================================== zoom + / −
+def test_zoom_buttons_levels_limits_and_label(arr, qapp):
+    t = arr.tab
+    t.add_paths([arr.a])
+    assert t.lbl_zoom.text() == "100%" and t.btn_zoom_in.isEnabled() and t.btn_zoom_out.isEnabled()
+    t.btn_zoom_in.click()
+    t._apply_zoom()
+    assert t.list.thumb_side() == 170 and t.lbl_zoom.text() == "121%"
+    for _ in range(10):
+        t.btn_zoom_in.click()
+    t._apply_zoom()
+    assert t.list.thumb_side() == 240 and not t.btn_zoom_in.isEnabled() and t.btn_zoom_out.isEnabled()
+    for _ in range(20):
+        t.btn_zoom_out.click()
+    t._apply_zoom()
+    assert t.list.thumb_side() == 80 and not t.btn_zoom_out.isEnabled() and t.lbl_zoom.text() == "57%"
+    assert not hasattr(t, "slider")
+    # ikon benar-benar digambar ulang dengan ukuran baru
+    assert t.list.item(0).icon().actualSize(t.list.iconSize()).width() <= 80
+
+
+def test_zoom_by_ctrl_wheel_and_shortcut(arr, qapp):
+    t = arr.tab
+    t.add_paths([arr.a])
+    ev = QWheelEvent(QPointF(20, 20), QPointF(20, 20), QPoint(0, 0), QPoint(0, 120), Qt.NoButton, Qt.ControlModifier,
+                     Qt.NoScrollPhase, False)
+    QApplication.sendEvent(t.list.viewport(), ev)
+    t._apply_zoom()
+    assert t.list.thumb_side() == 170
+    ev = QWheelEvent(QPointF(20, 20), QPointF(20, 20), QPoint(0, 0), QPoint(0, -120), Qt.NoButton, Qt.ControlModifier,
+                     Qt.NoScrollPhase, False)
+    QApplication.sendEvent(t.list.viewport(), ev)
+    QApplication.sendEvent(t.list.viewport(), ev)
+    t._apply_zoom()
+    assert t.list.thumb_side() == 120
+    ev = QWheelEvent(QPointF(20, 20), QPointF(20, 20), QPoint(0, 0), QPoint(0, 120), Qt.NoButton, Qt.NoModifier,
+                     Qt.NoScrollPhase, False)
+    QApplication.sendEvent(t.list.viewport(), ev)             # tanpa Ctrl: menggulir biasa, bukan zoom
+    t._apply_zoom()
+    assert t.list.thumb_side() == 120
+
+
+# ============================================================================ ukuran relatif (%)
+def test_resize_dialog_relative_mode_values_and_ui(arr):
+    from widgets.arranger_dialogs import PageSizeDialog
+    d = PageSizeDialog(None, 2, 5)
+    d.show()
+    assert d.spin_pct.isHidden()
+    d.combo_preset.setCurrentIndex(d.combo_preset.findData("relative"))
+    assert not d.spin_pct.isHidden() and not d.lbl_pct_hint.isHidden() and d.row_custom.isHidden()
+    assert not d.combo_orient.isEnabled() and not d.combo_fit.isEnabled() and not d.spin_margin.isEnabled()
+    d.spin_pct.setValue(75)
+    v = d.values()
+    assert v["scale"] == 0.75 and v["size"] is None and v["scale"] is not None
+    d.combo_preset.setCurrentIndex(d.combo_preset.findData("A4"))
+    assert d.values()["scale"] is None and d.spin_pct.isHidden() and d.combo_orient.isEnabled()
+    d.close()
+
+
+def test_resize_relative_applies_per_page_relative_to_original(arr, qapp, monkeypatch):
+    from widgets.arranger_dialogs import PageSizeDialog
+    pct = {"v": 50}
+
+    def fake_exec(self):
+        self.combo_preset.setCurrentIndex(self.combo_preset.findData("relative"))
+        self.spin_pct.setValue(pct["v"])
+        return QDialog.Accepted
+    monkeypatch.setattr(PageSizeDialog, "exec_", fake_exec)
+    t = arr.tab
+    t.add_paths([arr.a, arr.b])                         # A: 200x300 potret; B: 300x200 lanskap
+    select(t, 0, 3)
+    t.resize_dialog()
+    refs = t._ordered()
+    assert refs[0].size == (100.0, 150.0) and refs[3].size == (150.0, 100.0)     # tiap halaman 50% dari ASLInya
+    assert refs[1].size is None
+    assert "50%" in t.list.item(0).text() and "50%" in t.list.item(3).text()
+    assert "Skala: 50%" in t.list.item(0).toolTip()
+    n_undo = len(t._undo)
+    t.resize_dialog()                                    # ulangi 50%: tetap 50% dan TIDAK mencatat undo sia-sia
+    assert t._ordered()[0].size == (100.0, 150.0) and len(t._undo) == n_undo
+    pct["v"] = 200
+    t.resize_dialog()
+    assert t._ordered()[0].size == (400.0, 600.0)
+    select(t, 0)
+    t.rotate(90)                                         # putar: ukuran tertukar, skala tetap
+    assert t._ordered()[0].size == (600.0, 400.0) and "200%" in t.list.item(0).text()
+    t.undo()                                             # urungkan putaran
+    assert t._ordered()[0].size == (400.0, 600.0)
+    t.undo()                                             # urungkan 200% -> kembali 50%
+    assert t._ordered()[0].size == (100.0, 150.0)
+    # simpan: ukuran halaman hasil sesuai skala
+    t.edit_out.setText(str(arr.tmp / "skala.pdf"))
+    t.save_pdf()
+    wait_job(t, qapp)
+    with fitz.open(arr.tmp / "skala.pdf") as d:
+        assert [(round(p.rect.width), round(p.rect.height)) for p in d] == [(100, 150), (200, 300), (200, 300), (150, 100), (300, 200)]
+    select(t, 0)
+    t.reset_selected()
+    assert t._ordered()[0].size is None and t._ordered()[0].scale == 0
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)

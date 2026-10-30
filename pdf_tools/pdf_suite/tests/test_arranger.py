@@ -203,6 +203,63 @@ def test_set_page_size_none_restores_original():
     assert r.size is None and r.margin == 0 and r.display_size() == (200, 300)
 
 
+<<<<<<< HEAD
+=======
+def test_relative_scale_is_from_original_size_and_idempotent(tmp_path, two_pdfs):
+    src = {}
+    ra, rb = add(src, two_pdfs[0]), add(src, two_pdfs[1])           # A: 200x300 potret; B: 300x200 lanskap
+    f = ra[0].set_scale(0.5)
+    assert f == 0.5 and ra[0].size == (100.0, 150.0) and ra[0].scale == 0.5
+    ra[0].set_scale(0.5)                                              # diulang: tetap 50%, bukan 25%
+    assert ra[0].size == (100.0, 150.0)
+    rb[0].set_scale(1.5)
+    assert rb[0].size == (450.0, 300.0)                               # bentuk lanskap dipertahankan per halaman
+    out = str(tmp_path / "sc.pdf")
+    A.build_pdf([ra[0], rb[0], ra[1]], src, out)
+    with fitz.open(out) as d:
+        assert [(round(p.rect.width), round(p.rect.height)) for p in d] == [(100, 150), (450, 300), (200, 300)]
+    assert texts(out) == ["A1", "B1", "A2"]
+
+
+def test_relative_scale_with_rotation_resets_and_limits():
+    r = A.PageRef(1, 0, (200, 300))
+    r.rotate(90)                                                      # tampil 300x200
+    r.set_scale(0.5)
+    assert r.size == (150.0, 100.0)
+    r.rotate(90)                                                      # ukuran ikut tertukar, skala tetap
+    assert r.size == (100.0, 150.0) and r.scale == 0.5
+    r.set_scale(0.25)
+    assert r.size == (50.0, 75.0)
+    r.set_page_size(A.A4, "portrait")                                 # mengatur ukuran absolut menghapus tanda skala
+    assert r.scale == 0.0
+    r.set_scale(1000)                                                 # dibatasi batas PDF (14400 pt)
+    assert max(r.size) <= 14400.0 + 1e-6 and r.scale < 1000
+    r.set_scale(0.0001)
+    assert min(r.size) >= 3.0 - 1e-6
+    with pytest.raises(ValueError):
+        r.set_scale(0)
+    r.reset_changes()
+    assert (r.rotation, r.size, r.margin, r.scale) == (0, None, 0.0, 0.0)
+
+
+def test_relative_scale_content_scales_with_page(tmp_path):
+    """Blok merah menutupi separuh kiri halaman: setelah diskalakan 50% proporsinya di halaman harus tetap sama."""
+    doc = fitz.open()
+    pg = doc.new_page(width=200, height=100)
+    pg.draw_rect(fitz.Rect(0, 0, 100, 100), color=(1, 0, 0), fill=(1, 0, 0))
+    p = str(tmp_path / "h.pdf")
+    doc.save(p)
+    doc.close()
+    src = {}
+    ref = add(src, p)[0]
+    ref.set_scale(0.5)
+    w, h, rgb = A.render_page(ref, src, 100)
+    assert (w, h) == (200, 100)
+    px = lambda fx, fy: tuple(rgb[(int(fy * (h - 1)) * w + int(fx * (w - 1))) * 3:][:3])
+    assert px(0.25, 0.5) == (255, 0, 0) and px(0.75, 0.5)[1] > 200
+
+
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
 def test_describe_size():
     assert A.describe_size(A.PAGE_PRESETS["A4"]) == "A4"
     assert A.describe_size((841.89, 595.28)) == "A4"

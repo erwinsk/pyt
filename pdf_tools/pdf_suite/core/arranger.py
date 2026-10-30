@@ -74,6 +74,10 @@ class PageRef:
     size: Optional[Tuple[float, float]] = None   # ukuran halaman hasil (poin); None = pertahankan
     fit: str = "fit"
     margin: float = 0.0             # margin (poin) di dalam halaman hasil, hanya bila size diisi
+<<<<<<< HEAD
+=======
+    scale: float = 0.0              # >0 bila ukuran diatur RELATIF (0.5 = 50% dari ukuran asli); hanya untuk tampilan
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
 
     def copy(self) -> "PageRef":
         return dataclasses.replace(self)
@@ -99,6 +103,10 @@ class PageRef:
                       fit: str = "fit", margin: float = 0.0):
         """Atur ukuran halaman hasil. size = (lebar, tinggi) potret; None = kembali ke ukuran asli.
         orientation: 'auto' (ikuti bentuk halaman saat ini) | 'portrait' | 'landscape'."""
+<<<<<<< HEAD
+=======
+        self.scale = 0.0
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
         if size is None:
             self.size, self.margin = None, 0.0
             return
@@ -112,6 +120,26 @@ class PageRef:
         self.fit = fit if fit in FIT_MODES else "fit"
         self.margin = max(0.0, float(margin))
 
+<<<<<<< HEAD
+=======
+    def set_scale(self, factor: float) -> float:
+        """Atur ukuran halaman RELATIF terhadap ukuran asli halaman (setelah putar tambahan): 0.5 = 50%.
+        Dihitung dari ukuran asli, bukan ukuran saat ini, sehingga menerapkan 50% dua kali tetap 50%.
+        Bentuk halaman tidak berubah. Hasil dibatasi 3–14400 pt per sisi (batas PDF); mengembalikan faktor yang dipakai."""
+        factor = float(factor)
+        if factor <= 0:
+            raise ValueError("skala harus > 0")
+        nw, nh = self.natural_display()
+        f = min(max(factor, 3.0 / min(nw, nh)), 14400.0 / max(nw, nh))
+        self.size = (nw * f, nh * f)
+        self.fit, self.margin, self.scale = "fit", 0.0, f
+        return f
+
+    def reset_changes(self):
+        """Kembalikan putaran dan ukuran ke aslinya."""
+        self.rotation, self.size, self.margin, self.scale = 0, None, 0.0, 0.0
+
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
 
 def describe_size(size: Tuple[float, float]) -> str:
     """'A4', 'Letter' (bila cocok dengan preset, orientasi apa pun) atau '210 × 297 mm'."""

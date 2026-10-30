@@ -4,7 +4,11 @@ from typing import Dict, List
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
+<<<<<<< HEAD
                              QPushButton, QRadioButton, QScrollArea, QShortcut, QVBoxLayout, QWidget)
+=======
+                             QPushButton, QRadioButton, QScrollArea, QShortcut, QSpinBox, QVBoxLayout, QWidget)
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
 
 from core import arranger as A
 from widgets.common import WrapLabel
@@ -28,6 +32,10 @@ class PageSizeDialog(QDialog):
         for name in A.PAGE_PRESETS:
             self.combo_preset.addItem(name, name)
         self.combo_preset.addItem("Kustom (mm)…", "custom")
+<<<<<<< HEAD
+=======
+        self.combo_preset.addItem("Relatif terhadap ukuran asli (%)…", "relative")
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
         self.combo_preset.setCurrentIndex(self.combo_preset.findData("A4"))
         form.addRow("Ukuran", self.combo_preset)
 
@@ -47,6 +55,21 @@ class PageSizeDialog(QDialog):
         self.lbl_custom = QLabel("Lebar × tinggi")           # label & isi baris disembunyikan bersama (Qt5 tidak otomatis)
         form.addRow(self.lbl_custom, self.row_custom)
 
+<<<<<<< HEAD
+=======
+        self.spin_pct = QSpinBox()
+        self.spin_pct.setRange(5, 1000)
+        self.spin_pct.setSingleStep(5)
+        self.spin_pct.setValue(50)
+        self.spin_pct.setSuffix(" %")
+        self.lbl_pct = QLabel("Skala")
+        form.addRow(self.lbl_pct, self.spin_pct)
+        self.lbl_pct_hint = WrapLabel("Dihitung dari ukuran ASLI tiap halaman (bentuknya tidak berubah), jadi menerapkan "
+                                      "50% dua kali tetap 50%. Halaman berbeda ukuran tetap berbeda ukuran.")
+        self.lbl_pct_hint.setObjectName("hint")
+        form.addRow(self.lbl_pct_hint)
+
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
         self.combo_orient = QComboBox()
         self.combo_orient.addItem("Otomatis (ikuti bentuk halaman)", "auto")
         self.combo_orient.addItem("Potret", "portrait")
@@ -91,18 +114,34 @@ class PageSizeDialog(QDialog):
         data = self.combo_preset.currentData()
         self.row_custom.setVisible(data == "custom")
         self.lbl_custom.setVisible(data == "custom")
+<<<<<<< HEAD
         for w in (self.combo_orient, self.combo_fit, self.spin_margin):
             w.setEnabled(data is not None)
 
     def values(self) -> Dict:
         data = self.combo_preset.currentData()
         if data is None:
+=======
+        for w in (self.spin_pct, self.lbl_pct, self.lbl_pct_hint):
+            w.setVisible(data == "relative")
+        for w in (self.combo_orient, self.combo_fit, self.spin_margin):
+            w.setEnabled(data not in (None, "relative"))      # relatif: bentuk halaman tetap, hanya skala
+
+    def values(self) -> Dict:
+        data = self.combo_preset.currentData()
+        if data is None or data == "relative":
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
             size = None
         elif data == "custom":
             size = (self.spin_w.value() * A.MM, self.spin_h.value() * A.MM)
         else:
             size = A.PAGE_PRESETS[data]
+<<<<<<< HEAD
         return {"size": size, "orientation": self.combo_orient.currentData(), "fit": self.combo_fit.currentData(),
+=======
+        scale = self.spin_pct.value() / 100.0 if data == "relative" else None
+        return {"size": size, "scale": scale, "orientation": self.combo_orient.currentData(), "fit": self.combo_fit.currentData(),
+>>>>>>> 36ee49d (update pdf tools, arrange pdf)
                 "margin": self.spin_margin.value() * A.MM, "scope": "selected" if self.rb_sel.isChecked() else "all"}
 
 
