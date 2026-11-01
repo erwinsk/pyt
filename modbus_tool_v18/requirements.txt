@@ -1,0 +1,3 @@
+PyQt5>=5.15
+pymodbus>=2.5.3        # didukung 2.x maupun 3.x (kompatibilitas ditangani otomatis)
+pyserial>=3.5
