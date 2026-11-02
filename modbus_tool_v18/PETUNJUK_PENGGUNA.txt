@@ -1,0 +1,19 @@
+Modbus Tools Kalingin
+=====================
+
+CARA MENJALANKAN
+1. Ekstrak SELURUH isi berkas zip ke satu folder (mis. C:\Aplikasi\ModbusToolsKalingin).
+   Jangan memindahkan ModbusToolsKalingin.exe sendirian: ia membutuhkan folder "_internal"
+   yang berada di sebelahnya.
+2. Jika Windows memblokir berkas hasil unduhan (peringatan SmartScreen / "diblokir"):
+   - SEBELUM mengekstrak: klik kanan berkas zip > Properties > centang "Unblock" > OK.
+   - Atau di PowerShell:  Unblock-File -Path .\NamaBerkas.zip
+3. Jalankan ModbusToolsKalingin.exe.
+
+DATA PENGGUNA
+Pengaturan, preset otomatis, dan log tersimpan di:
+   %APPDATA%\ModbusToolsKalingin
+Hapus folder itu untuk mengembalikan aplikasi ke pengaturan awal.
+
+BANTUAN
+Menu Bantuan > "Buka Folder Log/Config..." membuka folder tersebut (berisi aplikasi.log).
