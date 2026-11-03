@@ -3,11 +3,25 @@ name: build-windows
 on:
   push:
     branches: [main]
+    paths:
+      - "modbus_tool_v18/**"
+      - ".github/workflows/python-app.yml"
   workflow_dispatch:   # supaya bisa dijalankan manual dari tombol
+    inputs:
+      lewati_tes:
+        description: "Lewati pytest sebelum build"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: modbus_tool_v18
     steps:
       - uses: actions/checkout@v4
 
@@ -15,24 +29,31 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: |
+            modbus_tool_v18/requirements.txt
+            modbus_tool_v18/requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller -r requirements.txt
+          python -m pip install -r requirements-dev.txt
 
-      - name: Build exe
-        run: >
-          pyinstaller --onefile --noconsole
-          --name ModbusToolsKalingin
-          --collect-submodules pymodbus
-          modbus_tool.py
-          
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app-windows
-          path: dist/*.exe
-          if-no-files-found: error
+      - name: Jalankan tes
+        if: ${{ !inputs.lewati_tes }}
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest
+
+      # Mode folder (bukan --onefile): lebih jarang ditandai antivirus / Smart App Control.
+      # build.py membuat dist/ModbusToolsKalingin_v<versi>_win64.zip dan mencetak SHA-256.
+      - name: Build (PyInstaller via build.py)
+        run: python build.py
 
       - name: Lihat isi dist
-        run: dir dist
+        run: Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ModbusToolsKalingin-v18-windows
+          path: modbus_tool_v18/dist/*.zip
+          if-no-files-found: error
