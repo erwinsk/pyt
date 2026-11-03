@@ -35,7 +35,7 @@ from modbus_app import __version__
 
 NAMA_APP = "ModbusToolsKalingin"
 JUDUL_APP = "Modbus Tools Kalingin"
-PENERBIT = os.environ.get("PENERBIT", "Kalingin")
+PENERBIT = os.environ.get("PENERBIT") or "Kalingin"
 ADALAH_WINDOWS = sys.platform.startswith("win")
 
 TEMPLATE_VERSI = """VSVersionInfo(
@@ -74,6 +74,7 @@ def bangun(onefile):
         "--noupx",                           # kompresi UPX sering memicu deteksi antivirus
         "--collect-submodules", "serial",    # pyserial memuat backend per-OS secara dinamis
         "--hidden-import", "serial.tools.list_ports",
+        "--hidden-import", "pymysql",        # diimpor lazy di dalam fungsi (fitur Simpan ke MySQL)
         "--onefile" if onefile else "--onedir",
     ]
     if ADALAH_WINDOWS:
@@ -127,7 +128,7 @@ def tanda_tangani(berkas_berkas, ukuran_batch=40):
     if not ADALAH_WINDOWS:
         print("[peringatan] Penandatanganan hanya didukung di Windows (signtool).")
         return False
-    stempel = os.environ.get("SIGN_TIMESTAMP_URL", "http://timestamp.digicert.com")
+    stempel = os.environ.get("SIGN_TIMESTAMP_URL") or "http://timestamp.digicert.com"
     perintah = ["signtool", "sign", "/fd", "SHA256", "/tr", stempel, "/td", "SHA256"]
     if thumbprint:
         perintah += ["/sha1", thumbprint]

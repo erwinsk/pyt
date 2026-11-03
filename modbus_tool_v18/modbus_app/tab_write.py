@@ -104,6 +104,22 @@ class WriteMixin:
         self.tabs.addTab(tab, "Write Register / Coil")
 
     def eksekusi_penulisan_modbus(self):
+        self._mulai_penulisan(
+            tipe_fungsi=self.combo_write_type.currentText(),
+            alamat=self.spin_write_addr.value(),
+            device_id=self.spin_write_slave.value(),
+            input_user=self.txt_write_payload.text(),
+            encoding=self.combo_write_encoding.currentText(),
+            verifikasi=self.chk_verify_write.isChecked(),
+            minta_konfirmasi=not self.chk_skip_confirm_write.isChecked(),
+            log_widget=self.txt_write_log,
+        )
+
+    def _mulai_penulisan(self, tipe_fungsi, alamat, device_id, input_user, encoding,
+                         verifikasi, minta_konfirmasi, log_widget, nama_perintah=None):
+        """Validasi, (opsional) konfirmasi, lalu jalankan 1 perintah tulis di thread
+        terpisah. Dipakai bersama oleh tab 'Write Register / Coil' (form sekali
+        pakai) dan tab 'Daftar Perintah (Write)' (perintah tersimpan)."""
         if self.thread_tulis and self.thread_tulis.isRunning():
             self._set_status("Penulisan sebelumnya masih berjalan, tunggu selesai dahulu.")
             return
@@ -111,61 +127,24 @@ class WriteMixin:
             QMessageBox.critical(self, "Error", "Master Modbus belum terhubung!")
             return
 
-        tipe_fungsi = self.combo_write_type.currentText()
-        encoding = self.combo_write_encoding.currentText()
-        input_user = self.txt_write_payload.text()
         waktu_skrg = datetime.now().strftime("%H:%M:%S")
-
-        p = {
-            'alamat': self.spin_write_addr.value(),
-            'device_id': self.spin_write_slave.value(),
-            'verifikasi': self.chk_verify_write.isChecked(),
-        }
 
         # --- Validasi & parsing input (di thread GUI, cepat, tanpa akses bus)
         try:
-            if "Single Coil" in tipe_fungsi:
-                p['jenis'] = 'single_coil'
-                p['nilai_bool'] = parse_nilai_bool(input_user)
-            elif "Multiple Coils" in tipe_fungsi:
-                elemen = [e for e in input_user.split(",") if e.strip()]
-                if not elemen:
-                    raise ValueError("Isi minimal satu nilai coil, dipisah koma (mis. 1,0,1).")
-                p['jenis'] = 'multi_coil'
-                p['daftar_bool'] = [parse_nilai_bool(e) for e in elemen]
-            elif "Mask Write" in tipe_fungsi:
-                bagian = [b.strip() for b in input_user.split(",")]
-                if len(bagian) != 2:
-                    raise ValueError("Perlu 2 nilai dipisah koma: AND_mask,OR_mask")
-                and_mask, or_mask = int(bagian[0], 0), int(bagian[1], 0)
-                for nama_mask, nilai in (("AND_mask", and_mask), ("OR_mask", or_mask)):
-                    if not 0 <= nilai <= 0xFFFF:
-                        raise ValueError(f"{nama_mask} {nilai} di luar rentang 0-65535 (0xFFFF).")
-                p.update(jenis='mask', and_mask=and_mask, or_mask=or_mask)
-            elif "Single Register" in tipe_fungsi:
-                register_final = enkode_nilai_ke_register(input_user, encoding)
-                if len(register_final) != 1:
-                    raise ValueError(
-                        f"FC 06 hanya menulis 1 register (16-bit), sedangkan format '{encoding}' "
-                        f"membutuhkan {len(register_final)} register. Pilih 'Write Multiple Registers "
-                        f"(FC 16)' atau ubah format ke 16-bit.")
-                p.update(jenis='single_reg', register_final=register_final)
-            else:  # Write Multiple Registers (FC 16)
-                register_final = []
-                for e in input_user.split(","):
-                    register_final.extend(enkode_nilai_ke_register(e.strip(), encoding))
-                p.update(jenis='multi_reg', register_final=register_final)
+            p = susun_parameter_tulis(tipe_fungsi, input_user, encoding, alamat, device_id, verifikasi)
         except ValueError as e:
-            self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] <font color='red'>Error Parsing Data: {e}</font>")
+            self._log_dibatasi(log_widget, f"[{waktu_skrg}] <font color='red'>Error Parsing Data: {e}</font>")
             return
 
         # Fitur keamanan: minta konfirmasi sebelum benar-benar menulis ke
         # perangkat, karena write yang salah alamat/nilai bisa berdampak ke
         # proses/perangkat industrial yang sedang berjalan.
-        if not self.chk_skip_confirm_write.isChecked():
+        if minta_konfirmasi:
+            baris_nama = f"  Perintah : {nama_perintah}\n" if nama_perintah else ""
             jawaban = QMessageBox.question(
                 self, "Konfirmasi Penulisan",
                 f"Anda akan menulis ke:\n\n"
+                f"{baris_nama}"
                 f"  Fungsi : {tipe_fungsi}\n"
                 f"  Slave ID : {p['device_id']}\n"
                 f"  Alamat : {p['alamat']}\n"
@@ -174,7 +153,7 @@ class WriteMixin:
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No
             )
             if jawaban != QMessageBox.Yes:
-                self._log_dibatasi(self.txt_write_log, f"[{waktu_skrg}] Penulisan dibatalkan oleh pengguna.")
+                self._log_dibatasi(log_widget, f"[{waktu_skrg}] Penulisan dibatalkan oleh pengguna.")
                 return
 
         # --- Eksekusi di thread terpisah (GUI tidak membeku walau bus sibuk/timeout)
@@ -182,6 +161,6 @@ class WriteMixin:
         self.btn_execute_write.setEnabled(False)
         th = ModbusWriteThread(self.client_global, p)
         self.thread_tulis = th
-        th.sinyal_log.connect(lambda pesan: self._log_dibatasi(self.txt_write_log, pesan))
+        th.sinyal_log.connect(lambda pesan: self._log_dibatasi(log_widget, pesan))
         th.finished.connect(lambda th=th: self._thread_selesai(th))
         th.start()

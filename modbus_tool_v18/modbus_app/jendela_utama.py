@@ -32,9 +32,13 @@ from .tab_reader import ReaderMixin
 from .tab_write import WriteMixin
 from .tab_logger import LoggerMixin
 from .tab_tag import TagMixin
+from .tab_perintah import PerintahMixin
+from .tab_konverter import KonverterMixin
+from .tab_mysql import MySQLMixin
 
 
-class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, LoggerMixin, TagMixin, QMainWindow):
+class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, PerintahMixin, LoggerMixin, TagMixin,
+                KonverterMixin, MySQLMixin, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Modbus Tools Kalingin v18.0")
@@ -51,6 +55,9 @@ class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, LoggerMixin, TagMixin, QMain
         self.memori_keterangan_user = {}
         self.nilai_sebelumnya = {}
         self.daftar_tag       = []   # daftar dict tag untuk tab "Daftar Tag"
+        self.daftar_perintah_write = []   # daftar dict perintah untuk tab "Daftar Perintah (Write)"
+        self._penulis_mysql   = {}   # kunci ('logger'/'tag') -> (thread penulis, daftar label kolom)
+        self._penulis_mysql_lama = []   # penulis yang sedang menguras antrean sebelum berhenti
         self.mode_gelap       = False
         self._rotasi_csv_hitungan = 0
         self._tanggal_csv_aktif = None
@@ -81,8 +88,10 @@ class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, LoggerMixin, TagMixin, QMain
         self.buat_tab_register_scanner()
         self.buat_tab_reader_pooler()
         self.buat_tab_write_payload()
+        self.buat_tab_daftar_perintah_write()
         self.buat_tab_logger()
         self.buat_tab_daftar_tag()
+        self.buat_tab_float_converter()
 
     def _buat_menu_bar(self):
         menubar = self.menuBar()
@@ -597,6 +606,16 @@ class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, LoggerMixin, TagMixin, QMain
                 'rotasi_harian': self.chk_rotasi_harian.isChecked(),
             },
             'daftar_tag': self.daftar_tag,
+            'daftar_perintah_write': self.daftar_perintah_write,
+            'logger_tag': {
+                'csv_path': self.txt_tag_csv_path.text(),
+                'simpan_csv': self.chk_tag_save_csv.isChecked(),
+            },
+            # Pengaturan database TANPA kata sandi (preset adalah berkas JSON teks biasa).
+            'database': {
+                'logger': self.panel_db_logger.pengaturan(),
+                'tag': self.panel_db_tag.pengaturan(),
+            },
             'tampilan': {'mode_gelap': self.mode_gelap},
         }
 
@@ -646,6 +665,26 @@ class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, LoggerMixin, TagMixin, QMain
 
         self.daftar_tag = data.get('daftar_tag', [])
         self._render_ulang_tabel_tag()
+
+        # Perintah tulis tersimpan: entri yang rusak dilewati (dicatat), bukan membatalkan seluruh preset.
+        self.daftar_perintah_write = []
+        for entri in data.get('daftar_perintah_write', []):
+            try:
+                self.daftar_perintah_write.append(normalisasi_perintah(entri))
+            except (ValueError, TypeError, AttributeError) as e:
+                catat_kesalahan("Preset: perintah tulis dilewati", e)
+        self._render_ulang_tabel_perintah()
+
+        # Bagian yang strukturnya salah (bukan objek JSON) diabaikan, bukan membuat seluruh preset gagal.
+        lt = data.get('logger_tag')
+        lt = lt if isinstance(lt, dict) else {}
+        if 'csv_path' in lt: self.txt_tag_csv_path.setText(str(lt['csv_path']))
+        self.chk_tag_save_csv.setChecked(bool(lt.get('simpan_csv', self.chk_tag_save_csv.isChecked())))
+
+        db = data.get('database')
+        db = db if isinstance(db, dict) else {}
+        self.panel_db_logger.terapkan(db.get('logger'))
+        self.panel_db_tag.terapkan(db.get('tag'))
 
         tampilan = data.get('tampilan', {})
         if 'mode_gelap' in tampilan:
@@ -725,6 +764,11 @@ class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, LoggerMixin, TagMixin, QMain
             self.btn_tag_baca_semua.setEnabled(kondisi)
         if hasattr(self, 'btn_tag_toggle_polling') and tab_aktif != "tag":
             self.btn_tag_toggle_polling.setEnabled(kondisi)
+        # Tombol per-baris ("Jalankan" perintah, "Baca" tag) ikut terkunci selama ada operasi bus.
+        if hasattr(self, 'tabel_perintah'):
+            self._atur_tombol_perintah(kondisi)
+        if hasattr(self, 'tabel_tag'):
+            self._atur_tombol_baca_tag(kondisi)
 
     def _reset_teks_tombol_operasi(self):
         self.btn_toggle_pool.setText("▶ Mulai Polling Otomatis")
@@ -738,6 +782,7 @@ class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, LoggerMixin, TagMixin, QMain
                   self.combo_log_encoding, self.spin_log_interval, self.txt_csv_path,
                   self.chk_save_csv, self.spin_rotasi_mb, self.chk_rotasi_harian):
             w.setEnabled(not kunci)
+        self.panel_db_logger.kunci(kunci)
 
     def _thread_selesai(self, th):
         """Dipanggil saat sebuah thread worker benar-benar berakhir -- baik
@@ -749,10 +794,12 @@ class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, LoggerMixin, TagMixin, QMain
         elif th is self.thread_logger:
             self.btn_toggle_logger.setText("▶ Mulai Perekaman Data")
             self._kunci_konfigurasi_logger(False)
+            self._hentikan_penulis_mysql('logger')   # sisa antrean ditulis dulu, baru berhenti
         elif th is self.thread_tag:
             if not th.single_shot:
                 self.btn_tag_toggle_polling.setText("▶ Mulai Polling Semua Tag")
             self._atur_edit_tag_aktif(True)
+            self._hentikan_penulis_mysql('tag')
         self._segarkan_interlock(abaikan=th)
         self._perbarui_indikator_koneksi()
 
@@ -914,6 +961,8 @@ class ModbusApp(ScanMixin, ReaderMixin, WriteMixin, LoggerMixin, TagMixin, QMain
         for th in daftar_thread:
             if th and th.isRunning():
                 th.wait(batas_tunggu_ms)
+        # Penulis MySQL terakhir: sisa baris yang sudah dibaca masih sempat ditulis.
+        self._matikan_semua_penulis_mysql()
 
     def closeEvent(self, event):
         self._simpan_otomatis()

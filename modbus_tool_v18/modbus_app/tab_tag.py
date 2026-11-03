@@ -24,6 +24,9 @@ from PyQt5.QtGui import QColor, QFont, QPalette
 from .konfigurasi import *  # noqa: F401,F403
 from .inti import *  # noqa: F401,F403
 from .worker import *  # noqa: F401,F403
+from .widget_mysql import PanelMySQL, bungkus_scroll
+
+KOLOM_AKSI_TAG = 9
 
 
 class TagMixin:
@@ -127,20 +130,49 @@ class TagMixin:
         self.btn_tag_toggle_polling.clicked.connect(lambda: self.eksekusi_baca_tag(tunggal=False))
         grid_kiri.addWidget(self.btn_tag_toggle_polling, 14, 0, 1, 2)
 
-        grid_kiri.setRowStretch(15, 1)
+        # --- Logger Daftar Tag (CSV & MySQL) ---
+        # Beda dari tab "Data Logger CSV": di sini 1 baris = 1 siklus baca dan
+        # kolomnya adalah NAMA TAG (bukan alamat register), karena tag bisa
+        # berasal dari alamat yang tidak berurutan / campuran tipe register.
+        grp_log_tag = QGroupBox("Logger Daftar Tag")
+        grid_log_tag = QGridLayout(grp_log_tag)
+
+        self.chk_tag_save_csv = QCheckBox("Simpan ke CSV")
+        grid_log_tag.addWidget(self.chk_tag_save_csv, 0, 0, 1, 2)
+
+        grid_log_tag.addWidget(QLabel("File CSV:"), 1, 0)
+        layout_tag_csv = QHBoxLayout()
+        self.txt_tag_csv_path = QLineEdit("tag_log_terbaru.csv")
+        layout_tag_csv.addWidget(self.txt_tag_csv_path)
+        self.btn_tag_csv_browse = QPushButton("...")
+        self.btn_tag_csv_browse.setMaximumWidth(40)
+        self.btn_tag_csv_browse.clicked.connect(self._pilih_file_csv_tag)
+        layout_tag_csv.addWidget(self.btn_tag_csv_browse)
+        grid_log_tag.addLayout(layout_tag_csv, 1, 1)
+
+        self.panel_db_tag = PanelMySQL("Simpan ke Database (MySQL)", "Simpan ke MySQL", "modbus_tag_log")
+        self.chk_tag_save_db = self.panel_db_tag.chk
+        grid_log_tag.addWidget(self.panel_db_tag, 2, 0, 1, 2)
+
+        grid_kiri.addWidget(grp_log_tag, 15, 0, 1, 2)
+
+        grid_kiri.setRowStretch(16, 1)
 
         # Tombol yang mengubah daftar tag dikunci selama pembacaan tag berjalan
         # (thread membaca salinan daftar & tabel harus tetap sejajar dengannya).
+        # Pengaturan logger tag ikut dikunci supaya konsisten selama sesi.
         self._widget_edit_tag = [self.btn_tambah_tag, self.btn_ubah_tag, self.btn_hapus_tag,
-                                 self.btn_tag_naik, self.btn_tag_turun, self.btn_tag_impor]
+                                 self.btn_tag_naik, self.btn_tag_turun, self.btn_tag_impor,
+                                 self.chk_tag_save_csv, self.txt_tag_csv_path, self.btn_tag_csv_browse
+                                 ] + self.panel_db_tag.widget_isian()
 
         panel_kanan = QWidget()
         layout_kanan = QVBoxLayout(panel_kanan)
         layout_kanan.setContentsMargins(0, 0, 0, 0)
 
-        self.tabel_tag = QTableWidget(0, 9)
+        self.tabel_tag = QTableWidget(0, 10)
         self.tabel_tag.setHorizontalHeaderLabels(
-            ["Nama", "Slave ID", "Tipe", "Alamat", "Encoding", "Skala", "Offset", "Nilai Mentah", "Nilai Akhir"]
+            ["Nama", "Slave ID", "Tipe", "Alamat", "Encoding", "Skala", "Offset", "Nilai Mentah", "Nilai Akhir", "Aksi"]
         )
         # FIX PERFORMA: mode ResizeToContents menghitung ulang lebar semua
         # kolom setiap kali ISI SEL berubah - karena tabel ini diperbarui
@@ -162,7 +194,7 @@ class TagMixin:
         layout_kanan.addWidget(box_monitor_tag, 1)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(box_kontrol)
+        splitter.addWidget(bungkus_scroll(box_kontrol))
         splitter.addWidget(panel_kanan)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -319,11 +351,56 @@ class TagMixin:
                     item = QTableWidgetItem(teks)
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                     self.tabel_tag.setItem(baris, kolom, item)
+
+                # Kolom "Aksi": baca 1 tag ini saja. `r=baris` WAJIB (bukan memakai
+                # `baris` langsung) supaya tiap tombol menyimpan nomor barisnya sendiri,
+                # bukan nilai terakhir loop (late-binding closure).
+                btn_baca_satu = QPushButton("Baca")
+                btn_baca_satu.setToolTip(f"Baca tag '{tag.get('nama', '')}' ini saja, sekarang juga.")
+                btn_baca_satu.clicked.connect(lambda checked=False, r=baris: self.baca_tag_tunggal(r))
+                self.tabel_tag.setCellWidget(baris, KOLOM_AKSI_TAG, btn_baca_satu)
             # Pas-kan lebar kolom SEKALI di sini (bukan otomatis terus-menerus
             # lewat ResizeToContents) - lihat catatan performa di atas.
             self.tabel_tag.resizeColumnsToContents()
         finally:
             self.tabel_tag.setUpdatesEnabled(True)
+        self._atur_tombol_baca_tag(self._operasi_aktif() is None)
+
+    def _atur_tombol_baca_tag(self, aktif):
+        """Aktif/nonaktifkan semua tombol 'Baca' per baris (ikut interlock operasi bus)."""
+        for baris in range(self.tabel_tag.rowCount()):
+            tombol = self.tabel_tag.cellWidget(baris, KOLOM_AKSI_TAG)
+            if tombol is not None:
+                tombol.setEnabled(aktif)
+
+    def _pilih_file_csv_tag(self):
+        jalur, _ = QFileDialog.getSaveFileName(self, "Simpan Log Tag Sebagai", "tag_log.csv", "CSV Files (*.csv)")
+        if jalur:
+            self.txt_tag_csv_path.setText(jalur)
+
+    def _siapkan_csv_tag(self):
+        """Pastikan file CSV logger tag punya header (Timestamp + nama tiap tag).
+        Mengembalikan False bila gagal. Bila file lama punya header berbeda dari
+        daftar tag saat ini, pengguna diperingatkan: kolom bisa tidak sinkron."""
+        jalur = self.txt_tag_csv_path.text()
+        header = ["Timestamp"] + [t.get('nama', '-') for t in self.daftar_tag]
+        try:
+            if not os.path.exists(jalur) or os.path.getsize(jalur) == 0:
+                with open(jalur, 'w', newline='', encoding='utf-8-sig') as f:    # BOM: Excel membaca UTF-8 dengan benar
+                    csv.writer(f).writerow(header)
+            else:
+                with open(jalur, 'r', newline='', encoding='utf-8-sig', errors='replace') as f:
+                    header_ada = next(csv.reader(f), [])
+                if header_ada != header:
+                    self._log_dibatasi(
+                        self.txt_tag_monitor,
+                        "<font color='orange'>[Peringatan] Header file CSV berbeda dengan daftar tag saat ini; "
+                        "kolom bisa tidak sinkron. Pakai file baru bila daftar tag berubah.</font>")
+        except Exception as e:
+            catat_kesalahan("Siapkan CSV tag", e)
+            self._log_dibatasi(self.txt_tag_monitor, f"<font color='red'>Gagal menyiapkan file CSV: {e}</font>")
+            return False
+        return True
 
     def eksekusi_baca_tag(self, tunggal=False):
         if not tunggal and self.thread_tag and self.thread_tag.isRunning():
@@ -345,6 +422,16 @@ class TagMixin:
             self._set_status("Masih ada pembacaan tag yang berjalan, tunggu selesai dahulu.")
             return
 
+        # Logger daftar tag: siapkan CSV dan/atau MySQL SEBELUM membaca apa pun, supaya
+        # kegagalan penyiapan tidak meninggalkan pembacaan setengah jalan.
+        if self.chk_tag_save_csv.isChecked() and not self._siapkan_csv_tag():
+            return
+        if self.panel_db_tag.aktif():
+            nama_tag = [t.get('nama', '-') for t in self.daftar_tag]
+            if not self._siapkan_penulis_mysql('tag', self.panel_db_tag, nama_tag,
+                                               self.txt_tag_monitor, "modbus_tag_log"):
+                return
+
         if not tunggal:
             self.manajemen_interlock_tombol("tag")
             self.btn_tag_toggle_polling.setText("■ Hentikan Polling")
@@ -365,29 +452,77 @@ class TagMixin:
         self._atur_edit_tag_aktif(False)
         th.start()
 
+    def _perbarui_baris_tabel_tag(self, baris, item_hasil):
+        """Isi kolom Nilai Mentah & Nilai Akhir satu baris (item sel dipakai ulang
+        lewat setText, bukan dibuat baru tiap siklus polling)."""
+        if baris >= self.tabel_tag.rowCount():
+            return
+        for kolom, kunci in ((7, 'nilai_mentah'), (8, 'nilai_akhir')):
+            item = self.tabel_tag.item(baris, kolom)
+            if item is None:
+                item = QTableWidgetItem()
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.tabel_tag.setItem(baris, kolom, item)
+            item.setText(item_hasil[kunci])
+        self.tabel_tag.item(baris, 8).setBackground(
+            QColor(WARNA_GAGAL) if item_hasil['status'] == 'ERROR' else QColor(Qt.transparent))
+
     def proses_hasil_tag_thread(self, hasil):
         stempel = datetime.now().strftime("%H:%M:%S")
-        # FIX PERFORMA: reuse item sel yang sudah ada (setText) alih-alih
-        # membuat objek QTableWidgetItem baru setiap siklus polling.
         self.tabel_tag.setUpdatesEnabled(False)
         try:
             for baris, item_hasil in enumerate(hasil):
-                if baris >= self.tabel_tag.rowCount():
-                    break
-                item_mentah = self.tabel_tag.item(baris, 7)
-                if item_mentah is None:
-                    item_mentah = QTableWidgetItem()
-                    item_mentah.setFlags(item_mentah.flags() & ~Qt.ItemIsEditable)
-                    self.tabel_tag.setItem(baris, 7, item_mentah)
-                item_mentah.setText(item_hasil['nilai_mentah'])
-
-                item_akhir = self.tabel_tag.item(baris, 8)
-                if item_akhir is None:
-                    item_akhir = QTableWidgetItem()
-                    item_akhir.setFlags(item_akhir.flags() & ~Qt.ItemIsEditable)
-                    self.tabel_tag.setItem(baris, 8, item_akhir)
-                item_akhir.setText(item_hasil['nilai_akhir'])
-                item_akhir.setBackground(QColor(WARNA_GAGAL) if item_hasil['status'] == 'ERROR' else QColor(Qt.transparent))
+                self._perbarui_baris_tabel_tag(baris, item_hasil)
         finally:
             self.tabel_tag.setUpdatesEnabled(True)
         self._log_dibatasi(self.txt_tag_monitor, f"[{stempel}] Pembacaan {len(hasil)} tag selesai.")
+
+        if not hasil:
+            return
+        stempel_lengkap = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        nilai_akhir_list = [h['nilai_akhir'] for h in hasil]
+
+        if self.chk_tag_save_csv.isChecked():
+            try:
+                with open(self.txt_tag_csv_path.text(), mode='a', newline='', encoding='utf-8') as f:
+                    csv.writer(f).writerow([stempel_lengkap] + nilai_akhir_list)
+            except Exception as e:
+                catat_kesalahan("Tulis baris CSV tag", e)
+                self._log_dibatasi(self.txt_tag_monitor, f"<font color='red'>Gagal simpan CSV: {e}</font>")
+
+        # Ditulis di thread penulis (GUI tidak menunggu database); no-op bila MySQL tidak aktif.
+        self._kirim_ke_mysql('tag', stempel_lengkap, nilai_akhir_list)
+
+    def baca_tag_tunggal(self, baris):
+        """Baca HANYA satu tag (baris yang diklik), di thread terpisah. Hasilnya
+        tidak ditulis ke logger CSV/MySQL (formatnya 1 baris = semua tag
+        sekaligus); ini untuk cek cepat nilai satu tag."""
+        if not (0 <= baris < len(self.daftar_tag)):
+            return
+        if not self.client_global or not client_terhubung(self.client_global):
+            self._set_status("Error: Koneksi utama belum aktif.")
+            return
+        if self._operasi_aktif() or (self.thread_tag and self.thread_tag.isRunning()):
+            self._set_status("Operasi lain sedang memakai bus, tunggu selesai dahulu.")
+            return
+
+        tag = self.daftar_tag[baris]
+        th = TagListReaderThread(self.client_global, [tag], single_shot=True,
+                                 auto_reconnect=self.chk_auto_reconnect.isChecked())
+        self.thread_tag = th
+
+        def terima(hasil, baris=baris):
+            if not hasil:
+                return
+            self._perbarui_baris_tabel_tag(baris, hasil[0])
+            self._log_dibatasi(
+                self.txt_tag_monitor,
+                f"[{datetime.now().strftime('%H:%M:%S')}] Baca tag '{hasil[0]['nama']}': {hasil[0]['nilai_akhir']}")
+
+        th.sinyal_hasil.connect(terima)
+        th.sinyal_kesalahan.connect(self.proses_kesalahan_thread)
+        th.sinyal_info.connect(self.proses_info_thread)
+        th.finished.connect(lambda th=th: self._thread_selesai(th))
+        self._atur_edit_tag_aktif(False)       # baris tidak boleh bergeser sebelum hasil tiba
+        self._atur_tombol_baca_tag(False)
+        th.start()

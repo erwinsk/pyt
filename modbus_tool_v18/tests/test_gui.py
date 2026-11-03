@@ -29,7 +29,9 @@ def test_semua_spinbox_slave_id_sampai_255(jendela):
 
 def test_semua_tab_terpasang(jendela):
     judul = [jendela.tabs.tabText(i) for i in range(jendela.tabs.count())]
-    assert len(judul) == 6 and "Daftar Tag (Multi-Read)" in judul
+    assert len(judul) == 8
+    for nama in ("Daftar Tag (Multi-Read)", "Daftar Perintah (Write)", "Float Converter"):
+        assert nama in judul
 
 
 def _tambah(w, nama, alamat):

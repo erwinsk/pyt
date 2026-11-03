@@ -24,6 +24,7 @@ from PyQt5.QtGui import QColor, QFont, QPalette
 from .konfigurasi import *  # noqa: F401,F403
 from .inti import *  # noqa: F401,F403
 from .worker import *  # noqa: F401,F403
+from .widget_mysql import PanelMySQL, bungkus_scroll
 
 
 class LoggerMixin:
@@ -99,11 +100,16 @@ class LoggerMixin:
         grid_rotasi.addWidget(self.chk_rotasi_harian, 1, 0, 1, 2)
         grid_kiri.addWidget(grp_rotasi, 8, 0, 1, 2)
 
+        # Logging paralel ke database MySQL (baris yang sama dengan CSV).
+        self.panel_db_logger = PanelMySQL("Simpan ke Database (MySQL)", "Aktifkan simpan ke MySQL", "modbus_log")
+        self.chk_save_db = self.panel_db_logger.chk
+        grid_kiri.addWidget(self.panel_db_logger, 9, 0, 1, 2)
+
         self.btn_toggle_logger = QPushButton("▶ Mulai Perekaman Data")
         self.btn_toggle_logger.clicked.connect(self.toggle_logger)
-        grid_kiri.addWidget(self.btn_toggle_logger, 9, 0, 1, 2)
+        grid_kiri.addWidget(self.btn_toggle_logger, 10, 0, 1, 2)
         
-        grid_kiri.setRowStretch(10, 1)
+        grid_kiri.setRowStretch(11, 1)
 
         box_monitor = QGroupBox("Monitor Live Data")
         tata_letak_monitor = QVBoxLayout(box_monitor)
@@ -112,7 +118,7 @@ class LoggerMixin:
         tata_letak_monitor.addWidget(self.txt_logger_monitor)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(box_kontrol)
+        splitter.addWidget(bungkus_scroll(box_kontrol))
         splitter.addWidget(box_monitor)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -223,6 +229,16 @@ class LoggerMixin:
                 return
 
         self.txt_logger_monitor.clear()
+
+        # Penulis MySQL: nama kolom dari snapshot parameter, sama persis dengan header CSV.
+        if self.panel_db_logger.aktif():
+            header_kolom = self._buat_header_csv_logger(
+                params['reg_awal'], params['jumlah'], params['tipe_reg'], params['encoding'])
+            if not self._siapkan_penulis_mysql('logger', self.panel_db_logger, header_kolom,
+                                               self.txt_logger_monitor, "modbus_log"):
+                self.manajemen_interlock_tombol(None, status_reset=True)
+                return
+
         self.thread_logger = ModbusPoolerLoggerThread(
             self.client_global, params, "logger",
             auto_reconnect=self.chk_auto_reconnect.isChecked()
@@ -282,6 +298,9 @@ class LoggerMixin:
             except Exception as e:
                 catat_kesalahan("Tulis baris CSV logger", e)
                 self._log_dibatasi(self.txt_logger_monitor, f"<font color='red'>Gagal simpan CSV: {str(e)}</font>")
+
+        # Ditulis di thread penulis (GUI tidak menunggu database); no-op bila MySQL tidak aktif.
+        self._kirim_ke_mysql('logger', stempel, hasil_decoded_list)
 
     def proses_kesalahan_thread(self, pesan_kesalahan, target_tab):
         if target_tab == "logger":

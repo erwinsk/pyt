@@ -1,5 +1,7 @@
 """Thread pekerja (QThread): scan, polling/logging, pembacaan tag, dan penulisan."""
 import copy
+import queue
+import threading
 import time
 import struct
 from datetime import datetime
@@ -482,3 +484,84 @@ class ModbusWriteThread(QThread):
         except Exception as e:
             catat_kesalahan("Verifikasi baca ulang write", e)
             self._log(f"<font color='orange'>Verifikasi gagal: {e}</font>")
+
+
+class PenulisMySQLThread(QThread):
+    """Menulis baris data ke MySQL di thread terpisah lewat antrean, supaya GUI
+    tidak membeku bila server database lambat atau tidak terjangkau (satu
+    percobaan sambung bisa menunggu beberapa detik).
+
+    Baris ditambahkan dengan kirim() dari thread GUI. Bila antrean penuh
+    (database mati lebih lama dari yang bisa ditampung), baris TERLAMA dibuang
+    dan jumlahnya dilaporkan. berhenti() meminta thread selesai setelah sisa
+    antrean tertulis, dengan batas waktu supaya penutupan aplikasi tidak
+    tertahan oleh database yang tidak menjawab."""
+    sinyal_log = pyqtSignal(str)
+
+    JEDA_CEK_DETIK = 0.2
+    BATAS_KURAS_DETIK = 3.0
+    JEDA_LAPOR_ERROR_DETIK = 30.0
+
+    def __init__(self, pencatat, maks_antrean=500):
+        super().__init__()
+        self.pencatat = pencatat
+        self.maks_antrean = maks_antrean
+        self._antrean = queue.Queue()
+        self._berhenti = threading.Event()
+        self._batas_kuras = None
+        self.jumlah_tersimpan = 0
+        self.jumlah_gagal = 0
+        self.jumlah_dibuang = 0
+
+    def kirim(self, stempel, daftar_label, daftar_nilai):
+        """Tambahkan satu baris ke antrean (aman dipanggil dari thread GUI)."""
+        if self._antrean.qsize() >= self.maks_antrean:
+            try:
+                self._antrean.get_nowait()
+                self.jumlah_dibuang += 1
+            except queue.Empty:
+                pass
+        self._antrean.put((stempel, list(daftar_label), list(daftar_nilai)))
+
+    def berhenti(self):
+        """Minta thread berhenti setelah antrean dikuras (dibatasi BATAS_KURAS_DETIK)."""
+        self._batas_kuras = time.monotonic() + self.BATAS_KURAS_DETIK
+        self._berhenti.set()
+
+    @property
+    def apakah_berjalan(self):
+        return not self._berhenti.is_set()
+
+    @apakah_berjalan.setter
+    def apakah_berjalan(self, nilai):
+        # Kompatibel dengan matikan_semua_thread_aktif() yang menurunkan flag ini.
+        if not nilai:
+            self.berhenti()
+
+    def run(self):
+        waktu_lapor_terakhir = 0.0
+        while True:
+            try:
+                item = self._antrean.get(timeout=self.JEDA_CEK_DETIK)
+            except queue.Empty:
+                if self._berhenti.is_set():
+                    break
+                continue
+            if self._berhenti.is_set() and time.monotonic() > self._batas_kuras:
+                self.jumlah_dibuang += 1 + self._antrean.qsize()
+                break
+            try:
+                self.pencatat.simpan_baris(*item)
+                self.jumlah_tersimpan += 1
+            except Exception as e:
+                self.jumlah_gagal += 1
+                catat_kesalahan("Tulis baris MySQL", e)
+                sekarang = time.monotonic()
+                if sekarang - waktu_lapor_terakhir >= self.JEDA_LAPOR_ERROR_DETIK or waktu_lapor_terakhir == 0.0:
+                    waktu_lapor_terakhir = sekarang
+                    self.sinyal_log.emit(
+                        f"<font color='red'>Gagal simpan ke MySQL: {pesan_error_mysql(e)} "
+                        f"(gagal sejauh ini: {self.jumlah_gagal})</font>")
+        if self.jumlah_dibuang:
+            self.sinyal_log.emit(
+                f"<font color='orange'>[Peringatan] {self.jumlah_dibuang} baris tidak sempat disimpan ke MySQL.</font>")

@@ -4,7 +4,7 @@ Aplikasi master Modbus RTU/TCP berbasis PyQt5 (pymodbus 2.x & 3.x).
 
 ## Menjalankan
 ```
-pip install -r requirements.txt
+pip install -r requirements.txt     # pymysql hanya dipakai fitur "Simpan ke MySQL"
 python modbus_tool.py          # atau: python -m modbus_app
 ```
 
@@ -15,9 +15,10 @@ python modbus_tool.py          # atau: python -m modbus_app
 | `modbus_app/konfigurasi.py` | konstanta, logging berotasi, penulisan JSON atomik |
 | `modbus_app/inti.py` | kompatibilitas pymodbus, encode/decode, validasi, pengelompokan blok tag (tanpa GUI) |
 | `modbus_app/worker.py` | thread: scan, polling/logging, baca tag (per blok), tulis |
-| `modbus_app/tab_*.py` | satu mixin per tab (scan, reader, write, logger, tag) |
+| `modbus_app/tab_*.py` | satu mixin per tab (scan, reader, write, perintah, logger, tag, konverter) |
+| `modbus_app/tab_mysql.py`, `widget_mysql.py` | penulis MySQL (thread + antrean) dan panel isian koneksi MySQL, dipakai tab Data Logger & Daftar Tag |
 | `modbus_app/jendela_utama.py` | jendela utama, koneksi, preset, interlock |
-| `tests/` | 85 tes: logika murni, GUI offscreen, dan ujung-ke-ujung ke server Modbus TCP mini |
+| `tests/` | 171 tes: logika murni, GUI offscreen, dan ujung-ke-ujung ke server Modbus TCP mini |
 
 ## Tes & build
 ```
@@ -27,6 +28,26 @@ python build.py                # executable (folder);  --onefile untuk satu berk
 ```
 Konfigurasi, preset otomatis, dan log (`aplikasi.log`, berotasi) disimpan di folder
 `%APPDATA%\ModbusToolsKalingin` (Windows) atau `~/.config/ModbusToolsKalingin`.
+
+## Tab
+Pemindai Device ID · Pemindai Peta Register · Pembaca Modbus Live · Write Register / Coil ·
+**Daftar Perintah (Write)** · Data Logger CSV (+ MySQL) · Daftar Tag (Multi-Read) (+ logger CSV/MySQL, baca per tag) · **Float Converter**.
+
+## Fitur yang dipindahkan dari `modbus_tool.py` (monolit lama)
+Versi monolit di root repo punya empat fitur yang belum ada di v18; kini semuanya tersedia di v18:
+- **Daftar Perintah (Write)**: perintah tulis (FC 05/06/15/16/22) disimpan sekali lalu dijalankan dengan satu klik
+  (tombol per baris), dengan konfirmasi opsional, verifikasi baca-ulang, simpan/ubah/hapus/urutkan. Logika parsing dibagi
+  dengan tab Write (`inti.susun_parameter_tulis`), jadi keduanya selalu berperilaku sama.
+- **Simpan ke MySQL** di tab Data Logger: baris yang sama dengan CSV ditulis paralel ke tabel MySQL (tabel/kolom dibuat otomatis).
+  Penulisan berjalan di thread terpisah dengan antrean, sehingga GUI tidak membeku bila database lambat/mati;
+  bila database mati, hanya galat yang dilaporkan (tidak membanjiri log) dan antrean dibatasi 500 baris.
+  Perlu paket `pymysql` (`pip install pymysql`; MySQL 8 dengan autentikasi `caching_sha2_password` juga butuh `cryptography`).
+  **Kata sandi database tidak pernah disimpan** ke preset/pengaturan otomatis; isi ulang setiap sesi.
+- **Logger Daftar Tag** (CSV dan MySQL): 1 baris = 1 siklus baca, kolom = nama tag. Berbeda dengan Data Logger yang kolomnya alamat register.
+  Tombol **Baca** per baris tag membaca satu tag saja (tidak ditulis ke logger).
+- **Float Converter**: register 16-bit <-> float32 untuk urutan ABCD/BADC/CDAB/DCBA, input desimal atau `0xHEX`, koma desimal diterima.
+- Preset pekerjaan kini ikut menyimpan daftar perintah, pengaturan database (tanpa kata sandi), dan pengaturan logger tag.
+  Preset v18.0 lama tetap bisa dimuat.
 
 ## Perubahan v18.0
 - **Bug**: FC 06 + format 32/64-bit kini ditolak dengan petunjuk memakai FC 16 (sebelumnya hanya separuh data terkirim);
@@ -85,3 +106,20 @@ Pilihan, dari yang paling tepat ke yang paling darurat:
 
 Catatan: logika penandatanganan sudah diuji dengan `signtool` palsu (tes `tests/test_build.py`), tetapi penandatanganan nyata dan
 perilaku SAC belum diuji di Windows oleh penulisnya; setelah menandatangani, uji di PC dengan SAC *On* sebelum membagikan.
+
+## Build otomatis lewat GitHub Actions
+`.github/workflows/build-windows.yml` membangun di runner Windows bersih. Cara pakai:
+1. Samakan `modbus_app/__init__.py` (`__version__`) dengan tag, mis. `18.0` -> tag `v18.0`, lalu `git tag v18.0 && git push origin v18.0`
+   (atau jalankan manual dari tab *Actions*). Workflow menolak tag yang tidak sama dengan `__version__`.
+2. Hasil: artifact `ModbusToolsKalingin-win64` (zip + `SHA256SUMS.txt`); untuk tag, otomatis dibuat GitHub Release.
+   Bagikan dari halaman *Releases* (bukan artifact, yang terbungkus zip lagi).
+3. Opsional: variabel repo `PENERBIT` (nama penerbit di metadata exe); rahasia `SIGN_PFX_B64` (PFX base64) dan `SIGN_PFX_PASSWORD`
+   untuk menandatangani. Tanpa rahasia ini build tetap jalan tetapi exe TIDAK bertanda tangan. Sertifikat CA publik yang baru umumnya
+   tidak bisa diekspor ke PFX (kunci di perangkat keras/cloud); untuk itu pakai layanan penandatanganan cloud dan sesuaikan langkahnya.
+Workflow ini belum pernah dijalankan di GitHub oleh penulisnya; jalankan sekali lewat *workflow_dispatch* dan periksa log-nya.
+
+## Catatan fitur MySQL
+- Setiap operasi membuka dan menutup koneksi sendiri. Batas waktu: sambung 5 detik, baca/tulis 10 detik
+  (server yang menerima TCP tetapi tidak menjawab kini menghasilkan galat, bukan membuat aplikasi macet).
+- Penulisan tidak diulang: baris yang gagal ditulis saat database mati hilang dari database (tetap ada di CSV). Peringatan muncul di monitor.
+- Teks galat Modbus pada tag yang gagal dibaca ikut tersimpan di kolom nilai (dipotong 64 karakter di database).
