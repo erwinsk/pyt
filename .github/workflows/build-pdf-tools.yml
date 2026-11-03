@@ -1,0 +1,50 @@
+name: build-pdf-tools
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pdf_tools/**"
+      - ".github/workflows/build-pdf-tools.yml"
+  workflow_dispatch:   # supaya bisa dijalankan manual dari tombol
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pdf_tools
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pdf_tools/pdf_suite/requirements.txt
+
+      # Hanya dependensi wajib (PyQt5, PyMuPDF, Pillow, platformdirs). Alat opsional
+      # (ocrmypdf, archive-pdf-tools) dan alat eksternal (Ghostscript, Tesseract, jbig2enc, dst.)
+      # TIDAK dibundel; di komputer pengguna diisi lewat dialog "Dependensi dan cache" di aplikasi.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller -r pdf_suite/requirements.txt
+
+      # Memakai PDF_Tools_Suite.spec (sumber tunggal pengaturan build: entry point, ikon, hidden import).
+      - name: Build exe
+        run: python -m PyInstaller --noconfirm --clean PDF_Tools_Suite.spec
+
+      - name: Lihat isi dist dan hash
+        run: |
+          Get-ChildItem dist
+          Get-FileHash dist\PDF_Tools_Suite.exe -Algorithm SHA256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PDF_Tools_Suite-windows
+          path: pdf_tools/dist/PDF_Tools_Suite.exe
+          if-no-files-found: error
